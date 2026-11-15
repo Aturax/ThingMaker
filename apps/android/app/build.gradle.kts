@@ -12,8 +12,8 @@ android {
         // Android 11: the device-credential fallback for the fingerprint unlock.
         minSdk = 30
         targetSdk = 35
-        versionCode = 11
-        versionName = "3.0.5"
+        versionCode = 12
+        versionName = "3.0.6"
     }
 
     buildTypes {

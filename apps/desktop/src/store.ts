@@ -68,6 +68,7 @@ import { applyEvent, emptyProjection, EMPTY_QUEUE, type Card, type Projection } 
 import { IS_REMOTE } from "./remote/mode";
 import { idleSweep, loadTouches, saveTouches, touch } from "./idleSessions";
 import { navEntry, navTarget, recordVisit, type NavEntry } from "./navHistory";
+import { rememberedPlace, rememberPlace, type Place } from "./remote/lastPlace";
 
 export const CLOSE_REQUESTED_EVENT = "thingmaker://close-requested";
 
@@ -1071,7 +1072,9 @@ export const useStore = create<State>((set, get) => ({
         // complete on the first render, not after visiting each project.
         void get().loadRecords(workspace.id);
       }
-      void get().rehydrate();
+      // The live sessions, attached again; the phone waits on them to return
+      // to the conversation it had open.
+      const rehydrated = get().rehydrate();
       void get().loadDefaultCombo();
       // Both accounts' usage for the sidebar, now and every five minutes: the
       // sessions report it too, but only while one is running.
@@ -1095,11 +1098,18 @@ export const useStore = create<State>((set, get) => ({
         }
         set({ closeRequest: { activity } });
       });
-      const first = workspaces[0];
-      if (first) {
-        await get().selectWorkspace(first.id);
+      const place = IS_REMOTE ? rememberedPlace() : null;
+      if (place && workspaces.some((w) => w.id === place.workspaceId)) {
+        await returnTo(get, set, place, rehydrated);
+      } else {
+        const first = workspaces[0];
+        if (first) {
+          await get().selectWorkspace(first.id);
+        }
       }
+      placeRestored = true;
     } catch (error) {
+      placeRestored = true;
       set({ error: asError(error) });
     }
   },
@@ -3351,6 +3361,36 @@ export function viewExists(state: Pick<State, "sessions" | "workspaces">, view: 
   if (view.kind === "workspace") return state.workspaces.some((w) => w.id === view.workspaceId);
   return true;
 }
+
+/**
+ * The phone back where it was before its screens started over: the project
+ * at once, then the conversation once its live session is attached again.
+ * A conversation that is no longer open leaves it on its project.
+ */
+async function returnTo(get: Get, set: Set, place: Place, rehydrated: Promise<void>): Promise<void> {
+  await get().selectWorkspace(place.workspaceId);
+  if (place.kind !== "session") return;
+  await rehydrated;
+  const view = get().view;
+  // The person moved on while the sessions were loading: leave them there.
+  if (view.kind !== "workspace" || view.workspaceId !== place.workspaceId) return;
+  if (!get().sessions[place.sessionId]) return;
+  set({ sessionTab: place.tab, transcriptSearchOpen: false });
+  get().setView({ kind: "session", sessionId: place.sessionId });
+}
+
+/** Whether the phone's start has settled where it goes, so its own moves are not remembered over the place it is returning to. */
+let placeRestored = !IS_REMOTE;
+useStore.subscribe((state, prev) => {
+  if (!IS_REMOTE || !placeRestored || (state.view === prev.view && state.sessionTab === prev.sessionTab)) return;
+  const view = state.view;
+  if (view.kind === "session") {
+    const workspaceId = state.sessions[view.sessionId]?.workspaceId;
+    if (workspaceId) rememberPlace({ kind: "session", sessionId: view.sessionId, workspaceId, tab: state.sessionTab });
+  } else if (view.kind === "workspace") {
+    rememberPlace({ kind: "workspace", workspaceId: view.workspaceId });
+  }
+});
 
 // Every move is recorded after the fact, once per tick: switching session sets
 // the view and the panel separately, and that is one visit, not two.
