@@ -147,6 +147,15 @@ impl Terminal {
     /// Terminates the shell and its process group (best effort, like an agent's own
     /// process-tree cleanup). Remote effects already caused are not undone.
     pub fn kill(&self) {
+        #[cfg(windows)]
+        if self.private {
+            // ConPTY can still be waiting for its initial cursor reply when
+            // the renderer disappears. Unblock that handshake before killing
+            // the process, otherwise ClosePseudoConsole can wait indefinitely.
+            let mut writer = lock(&self.writer);
+            let _ = writer.write_all(b"\x1b[1;1R");
+            let _ = writer.flush();
+        }
         #[cfg(unix)]
         if let Some(pid) = self.pid {
             unsafe {
