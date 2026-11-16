@@ -108,3 +108,80 @@ describe("a new session", () => {
     expect(screen.getByText("Claude Code could not start: Claude Code is not signed in")).toBeTruthy();
   });
 });
+
+describe("returning to a conversation", () => {
+  const record = { id: "r1", workspaceId: "w1", agentSessionId: "agent-1", autoTitle: "Fix the login bug", origin: "desktop", archiveState: "active", pinned: false, provider: "claude", createdAt: 0 };
+
+  beforeEach(() => {
+    useStore.setState({ records: { w1: [record] }, view: { kind: "workspace", workspaceId: "w1" } } as never);
+    vi.mocked(api.sessionListOpen).mockResolvedValue([] as never);
+    vi.mocked(api.sessionSnapshot).mockResolvedValue({ handle: { id: "s1", attachmentGeneration: "1" }, provider: "claude", agentSessionId: "agent-1", toolCalls: {}, foreground: "idle" } as never);
+  });
+
+  it("shows it at once, like a new one, and sends what was written once it is back", async () => {
+    let ready: (value: unknown) => void = () => undefined;
+    let historyReady: (value: unknown) => void = () => undefined;
+    vi.mocked(api.sessionOpen).mockReturnValue(new Promise((resolve) => (ready = resolve)) as never);
+    vi.mocked(api.sessionHistory).mockReturnValue(new Promise((resolve) => (historyReady = resolve)) as never);
+    const send = vi.fn(async () => undefined);
+    useStore.setState({ send } as never);
+
+    const opening = useStore.getState().openSession("w1", { mode: "resume", session_id: "agent-1" });
+    expect(useStore.getState().view).toEqual({ kind: "starting" });
+    expect(useStore.getState().busy).toBeNull();
+    render(<StartingPanel />);
+    expect(screen.getByRole("region", { name: "Fix the login bug" })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("Recovering the conversation…");
+    expect(screen.getByText("Resuming Claude Code…")).toBeTruthy();
+    const input = screen.getByRole("textbox", { name: "Prompt" });
+    fireEvent.change(input, { target: { value: "And the signup one" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText("Sends as soon as Claude Code is ready")).toBeTruthy();
+
+    ready({ handle: { id: "s1", attachmentGeneration: "1" } });
+    // Still waiting while its history loads, so it never looks empty.
+    await waitFor(() => expect(api.sessionHistory).toHaveBeenCalled());
+    expect(useStore.getState().view).toEqual({ kind: "starting" });
+    historyReady([]);
+    await opening;
+    await waitFor(() => expect(send).toHaveBeenCalledWith("s1"));
+    expect(useStore.getState().drafts.s1).toBe("And the signup one");
+    expect(useStore.getState().starting).toBeNull();
+    expect(useStore.getState().view).toEqual({ kind: "session", sessionId: "s1" });
+  });
+
+  it("shows the same wait while it attaches to a session still running on the computer", async () => {
+    let historyReady: (value: unknown) => void = () => undefined;
+    vi.mocked(api.sessionListOpen).mockResolvedValue([{ handle: { id: "s1", attachmentGeneration: "1" }, agentSessionId: "agent-1", workspaceId: "w1" }] as never);
+    vi.mocked(api.sessionHistory).mockReturnValue(new Promise((resolve) => (historyReady = resolve)) as never);
+
+    const opening = useStore.getState().openSession("w1", { mode: "resume", session_id: "agent-1" });
+    expect(useStore.getState().view).toEqual({ kind: "starting" });
+    await waitFor(() => expect(api.sessionHistory).toHaveBeenCalled());
+    expect(useStore.getState().view).toEqual({ kind: "starting" });
+    historyReady([]);
+    await opening;
+    expect(api.sessionOpen).not.toHaveBeenCalled();
+    expect(useStore.getState().starting).toBeNull();
+    expect(useStore.getState().view).toEqual({ kind: "session", sessionId: "s1" });
+  });
+
+  it("does not take you back to it if you navigate away while it loads", async () => {
+    let ready: (value: unknown) => void = () => undefined;
+    vi.mocked(api.sessionOpen).mockReturnValue(new Promise((resolve) => (ready = resolve)) as never);
+    vi.mocked(api.sessionHistory).mockResolvedValue([] as never);
+    const opening = useStore.getState().openSession("w1", { mode: "resume", session_id: "agent-1" });
+    useStore.getState().setView({ kind: "settings" });
+    ready({ handle: { id: "s1", attachmentGeneration: "1" } });
+    await opening;
+    expect(useStore.getState().view).toEqual({ kind: "settings" });
+    expect(useStore.getState().starting).toBeNull();
+  });
+
+  it("says so when it could not be resumed", async () => {
+    vi.mocked(api.sessionOpen).mockRejectedValue({ code: "NOT_READY", message: "Claude Code is not signed in" });
+    await useStore.getState().openSession("w1", { mode: "resume", session_id: "agent-1" });
+    render(<StartingPanel />);
+    expect(screen.getByText("Claude Code could not resume this conversation: Claude Code is not signed in")).toBeTruthy();
+  });
+});

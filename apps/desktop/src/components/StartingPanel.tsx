@@ -1,6 +1,7 @@
 /**
- * A new session while its agent starts: the chat is there at once, so the
- * person sees something happening and can write. A message sent now waits
+ * A session while its agent starts — a new one, or one being resumed: the
+ * chat is there at once, so the person sees something happening and can
+ * write. A message sent now waits
  * and goes out as soon as the session is ready; then this view gives way to
  * the session itself.
  */
@@ -23,6 +24,7 @@ export function StartingPanel() {
 
   if (!starting) return null;
   const provider = PROVIDER_LABELS[starting.provider];
+  const heading = starting.resuming ? starting.title || t("Conversation") : t("New session");
   const queue = () => {
     if (starting.draft.trim()) setStartingDraft(starting.draft, true);
   };
@@ -35,9 +37,9 @@ export function StartingPanel() {
   };
 
   return (
-    <section aria-label={t("New session")} className="panel session-panel starting-panel">
+    <section aria-label={heading} className="panel session-panel starting-panel">
       <header className="session-header">
-        <strong>{t("New session")}</strong>
+        <strong>{heading}</strong>
         {workspace && <span className="muted">{workspace.displayPath.split(/[\\/]/).pop()}</span>}
       </header>
       <div className="transcript">
@@ -45,9 +47,11 @@ export function StartingPanel() {
           <div aria-hidden="true" className={`starting-mark${starting.error ? " starting-mark-error" : ""}`}>
             <ProviderMark provider={starting.provider} size={32} />
           </div>
-          {starting.error ? <p className="chip-warn-text">{t("{provider} could not start: {error}", { provider, error: starting.error })}</p> : <>
-            <strong>{t("Setting up the office…")}</strong>
-            <span className="muted">{t("Starting {provider}…", { provider })}</span>
+          {starting.error ? <p className="chip-warn-text">{starting.resuming
+            ? t("{provider} could not resume this conversation: {error}", { provider, error: starting.error })
+            : t("{provider} could not start: {error}", { provider, error: starting.error })}</p> : <>
+            <strong>{starting.resuming ? t("Recovering the conversation…") : t("Setting up the office…")}</strong>
+            <span className="muted">{starting.resuming ? t("Resuming {provider}…", { provider }) : t("Starting {provider}…", { provider })}</span>
             <p className="small muted">{t("You can write now. Your message will be sent when everything is ready.")}</p>
           </>}
         </div>

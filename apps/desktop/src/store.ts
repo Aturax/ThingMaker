@@ -539,9 +539,11 @@ type State = {
   stop: (sessionId: string) => Promise<void>;
   refreshSnapshot: (sessionId: string) => Promise<void>;
   setConfigOption: (sessionId: string, configId: string, value: string) => Promise<void>;
-  /** A new session while its agent starts: what the person writes meanwhile,
-   *  and whether they sent it (it goes out once the session is ready). */
-  starting: { id: string; workspaceId: string; provider: Provider; draft: string; queued: boolean; error?: string } | null;
+  /** A session whose agent is still starting — a new one, or one being
+   *  resumed (`resuming`, with its known title) — shown at once by
+   *  StartingPanel: what the person writes meanwhile, and whether they sent
+   *  it (it goes out once the session is ready). */
+  starting: { id: string; workspaceId: string; provider: Provider; draft: string; queued: boolean; error?: string; resuming?: boolean; title?: string } | null;
   setStartingDraft: (draft: string, queued: boolean) => void;
   /** Signs in to a provider: its active account, or `account`. */
   startSignIn: (provider: Provider, account?: string) => Promise<void>;
@@ -2342,22 +2344,47 @@ export const useStore = create<State>((set, get) => ({
     if (mode.mode === "resume") {
       const live = Object.values(get().sessions).find((session) => session.snapshot.agentSessionId === mode.session_id && session.projection.process !== "exited");
       if (live) return get().selectSession(live.handle.id);
+    }
+    const chosen: Provider = recorded ?? provider ?? startingProvider(get().providers);
+    // A session opens its chat at once, and the agent starts behind it: a
+    // new one, and one being resumed, which otherwise left the person
+    // looking at the screen they came from, wondering if it had stuck.
+    const message = launch?.message?.trim() ? launch.message : "";
+    const record = mode.mode === "resume" ? (get().records[workspaceId] ?? []).find((entry) => entry.agentSessionId === mode.session_id) : undefined;
+    const title = record?.titleOverlay || record?.autoTitle || undefined;
+    const starting = {
+      id: crypto.randomUUID(),
+      workspaceId,
+      provider: chosen,
+      draft: message,
+      queued: !!message,
+      ...(mode.mode === "resume" ? { resuming: true, ...(title ? { title } : {}) } : {}),
+    };
+    set({ starting, view: { kind: "starting" }, error: null, lockedResume: null });
+    // The chat gives way to the session once it is attached, unless the
+    // person went elsewhere meanwhile; what was written carries over.
+    const settle = (handleId: string) => {
+      const waited = get().starting;
+      if (waited?.id !== starting.id) return;
+      if (get().view.kind === "starting") get().selectSession(handleId);
+      set({ starting: null });
+      if (waited.draft) {
+        get().setDraft(handleId, waited.draft);
+        if (waited.queued) void get().send(handleId);
+      }
+    };
+    if (mode.mode === "resume") {
       try {
         const running = (await api.sessionListOpen()).find((entry) => entry.agentSessionId === mode.session_id);
         if (running) {
-          await attachLive(get, set, running.handle, workspaceId, true);
+          await attachLive(get, set, running.handle, workspaceId, false);
+          settle(running.handle.id);
           return;
         }
       } catch {
         // Fall through to an ordinary resume.
       }
     }
-    const chosen: Provider = recorded ?? provider ?? startingProvider(get().providers);
-    // A new session opens its chat at once, and the agent starts behind it.
-    const message = launch?.message?.trim() ? launch.message : "";
-    const starting = mode.mode === "new" ? { id: crypto.randomUUID(), workspaceId, provider: chosen, draft: message, queued: !!message } : null;
-    if (starting) set({ starting, view: { kind: "starting" }, error: null, lockedResume: null });
-    else set({ busy: t("Resuming {provider} session", { provider: PROVIDER_LABELS[chosen] }), error: null, lockedResume: null });
     try {
       const opened = await api.sessionOpen({
         workspaceId,
@@ -2370,20 +2397,11 @@ export const useStore = create<State>((set, get) => ({
       });
       // Keep the preparation view visible through snapshot, subscription and
       // history loading. A half-attached session otherwise looks like a blank chat.
-      await attachLive(get, set, opened.handle, workspaceId, !starting);
-      const waited = get().starting;
-      if (starting && waited?.id === starting.id) {
-        if (get().view.kind === "starting") get().selectSession(opened.handle.id);
-        set({ starting: null });
-        // What was written while it started carries over, and goes out if sent.
-        if (waited.draft) {
-          get().setDraft(opened.handle.id, waited.draft);
-          if (waited.queued) void get().send(opened.handle.id);
-        }
-      }
+      await attachLive(get, set, opened.handle, workspaceId, false);
+      settle(opened.handle.id);
     } catch (error) {
       const desktopError = asError(error);
-      if (starting && get().starting?.id === starting.id) set({ starting: { ...(get().starting ?? starting), error: desktopError.message } });
+      if (get().starting?.id === starting.id) set({ starting: { ...(get().starting ?? starting), error: desktopError.message } });
       if (mode.mode === "resume" && desktopError.code === "LOCKED") {
         set({ lockedResume: { workspaceId, sessionId: mode.session_id, error: desktopError } });
       }
