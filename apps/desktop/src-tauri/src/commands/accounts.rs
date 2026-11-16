@@ -57,14 +57,17 @@ pub async fn accounts_list(provider: Provider, state: State<'_, AppState>) -> Co
         Ok(resolved) => resolved,
         Err(_) => return Ok(views),
     };
-    let folders: Vec<Option<std::path::PathBuf>> = views.iter().map(|view| state.account_folder(provider, Some(&view.id))).collect();
+    let folders: Vec<_> = views.iter().map(|view| state.try_account_folder(provider, Some(&view.id))).collect();
     // Each answers through its own program run; asked side by side.
     let statuses = tauri::async_runtime::spawn_blocking(move || {
         let threads: Vec<_> = folders
             .into_iter()
             .map(|folder| {
                 let resolved = resolved.clone();
-                std::thread::spawn(move || super::providers::auth_status(&resolved, folder.as_deref()))
+                std::thread::spawn(move || match folder {
+                    Ok(folder) => super::providers::auth_status(&resolved, folder.as_deref()),
+                    Err(error) => ProviderAuthStatus { setup_required: None, provider, logged_in: Some(false), method: None, account: None, plan: None, problem: Some(error.message) },
+                })
             })
             .collect();
         threads.into_iter().map(|thread| thread.join().ok()).collect::<Vec<_>>()
@@ -87,10 +90,14 @@ pub fn account_add(provider: Provider, label: String, state: State<'_, AppState>
         return Err(DesktopError::unsupported("give the account a name"));
     }
     let id = format!("acct-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
-    let mut list = state.accounts();
+    let previous = state.accounts();
+    let mut list = previous.clone();
     list.push(Account { id: id.clone(), provider, label: label.clone() });
     save(&state, &list)?;
-    state.account_folder(provider, Some(&id));
+    if let Err(error) = state.try_account_folder(provider, Some(&id)) {
+        save(&state, &previous)?;
+        return Err(error);
+    }
     Ok(AccountView { id, provider, label, is_default: false, active: false, auth: None })
 }
 
@@ -116,14 +123,22 @@ pub async fn account_remove(provider: Provider, id: String, state: State<'_, App
     if id == DEFAULT_ACCOUNT || !accounts::valid_id(&id) {
         return Err(DesktopError::unsupported("your own account cannot be removed here"));
     }
-    // Gemini extra accounts use private files, never the shared keyring.
-    // Removing their home clears their local sign-in without touching the app.
-    if provider != Provider::Gemini {
-        let _ = super::providers::provider_logout(provider, Some(id.clone()), state.clone()).await;
-    }
     let folder = accounts::account_folder(&state.data_dir, provider, &id);
-    // Removes links, never what they point to.
-    let _ = std::fs::remove_dir_all(&folder);
+    if provider == Provider::Gemini {
+        if !state.accounts().iter().any(|a| a.provider == provider && a.id == id) {
+            return Err(DesktopError::not_ready("that account is gone"));
+        }
+        if thingmaker_supervisor::agents::gemini::launch::token_path(&folder).exists() || thingmaker_supervisor::agents::gemini::launch::legacy_token_path(&folder).exists() {
+            super::providers::provider_logout(provider, Some(id.clone()), state.clone()).await?;
+            if thingmaker_supervisor::agents::gemini::launch::token_path(&folder).exists() {
+                return Err(DesktopError::io("Antigravity did not clear this account's sign-in; the account has been kept."));
+            }
+        }
+        accounts::remove_gemini_profile(&folder).map_err(|error| DesktopError::io(error.to_string()))?;
+    } else {
+        let _ = super::providers::provider_logout(provider, Some(id.clone()), state.clone()).await;
+        let _ = std::fs::remove_dir_all(&folder);
+    }
     let list: Vec<Account> = state.accounts().into_iter().filter(|account| !(account.provider == provider && account.id == id)).collect();
     save(&state, &list)?;
     if state.active_account(provider) == DEFAULT_ACCOUNT {
@@ -139,7 +154,7 @@ pub fn account_set_active(provider: Provider, id: String, state: State<'_, AppSt
     if id != DEFAULT_ACCOUNT && !state.accounts().iter().any(|account| account.provider == provider && account.id == id) {
         return Err(DesktopError::not_ready("that account is gone"));
     }
+    state.try_account_folder(provider, Some(&id))?;
     state.with_storage(|s| s.setting_set(accounts::ACTIVE_ACCOUNT_SETTING, provider.as_str(), &id)).map_err(storage_error)?;
-    state.account_folder(provider, Some(&id));
     Ok(())
 }

@@ -183,7 +183,10 @@ pub(crate) fn build_launch(
         }
         Provider::Gemini => {
             let mut options = GeminiLaunchOptions::new(root, resolved.program.clone());
-            options.account_home = state.account_folder(Provider::Gemini, None);
+            options.account_home = state.try_account_folder(Provider::Gemini, None)?;
+            if let Some(folder) = options.account_home.as_deref() {
+                thingmaker_supervisor::agents::gemini::launch::require_isolated_token(folder).map_err(DesktopError::unsupported)?;
+            }
             options.reserved = reserved;
             options.model = model;
             options.effort = effort;

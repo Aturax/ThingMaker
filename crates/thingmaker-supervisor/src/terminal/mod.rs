@@ -68,6 +68,8 @@ pub struct Terminal {
     events: broadcast::Sender<Arc<TerminalEvent>>,
     exited: AtomicBool,
     exit_code: Mutex<Option<u32>>,
+    private: bool,
+    private_subscribed: AtomicBool,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -89,6 +91,8 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 impl Terminal {
+    pub fn is_private(&self) -> bool { self.private }
+
     pub fn info(&self) -> TerminalInfo {
         let (cols, rows) = *lock(&self.size);
         TerminalInfo {
@@ -109,7 +113,13 @@ impl Terminal {
 
     /// Bounded scrollback for rehydration, oldest bytes first.
     pub fn scrollback(&self) -> Vec<u8> {
-        lock(&self.scrollback).iter().copied().collect()
+        let mut scrollback = lock(&self.scrollback);
+        if self.private {
+            self.private_subscribed.store(true, Ordering::SeqCst);
+            scrollback.drain(..).collect()
+        } else {
+            scrollback.iter().copied().collect()
+        }
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<(), DesktopError> {
@@ -163,6 +173,15 @@ impl TerminalManager {
     }
 
     pub fn open(&self, spawn: TerminalSpawn) -> Result<Arc<Terminal>, DesktopError> {
+        self.open_with_privacy(spawn, false)
+    }
+
+    /// Authentication output is never listed or exportable as a user terminal.
+    pub fn open_private(&self, spawn: TerminalSpawn) -> Result<Arc<Terminal>, DesktopError> {
+        self.open_with_privacy(spawn, true)
+    }
+
+    fn open_with_privacy(&self, spawn: TerminalSpawn, private: bool) -> Result<Arc<Terminal>, DesktopError> {
         if lock(&self.terminals).values().filter(|t| !t.is_exited()).count() >= MAX_TERMINALS {
             return Err(DesktopError::limit_exceeded(format!("at most {MAX_TERMINALS} terminals may be open")));
         }
@@ -201,6 +220,8 @@ impl TerminalManager {
             events,
             exited: AtomicBool::new(false),
             exit_code: Mutex::new(None),
+            private,
+            private_subscribed: AtomicBool::new(false),
         });
         // Reader thread: PTY -> scrollback + subscribers.
         let reader_terminal = Arc::clone(&terminal);
@@ -215,7 +236,9 @@ impl TerminalManager {
                             let bytes = &buffer[..read];
                             {
                                 let mut scrollback = lock(&reader_terminal.scrollback);
-                                scrollback.extend(bytes.iter().copied());
+                                if !reader_terminal.private || !reader_terminal.private_subscribed.load(Ordering::SeqCst) {
+                                    scrollback.extend(bytes.iter().copied());
+                                }
                                 while scrollback.len() > SCROLLBACK_BYTES {
                                     scrollback.pop_front();
                                 }
@@ -261,7 +284,18 @@ impl TerminalManager {
     }
 
     pub fn list(&self) -> Vec<TerminalInfo> {
-        lock(&self.terminals).values().map(|t| t.info()).collect()
+        lock(&self.terminals).values().filter(|t| !t.is_private()).map(|t| t.info()).collect()
+    }
+
+    pub fn export(&self, id: &str) -> Result<String, DesktopError> {
+        let terminal = self.get(id).ok_or_else(|| DesktopError::not_ready("terminal not found"))?;
+        if terminal.is_private() { return Err(DesktopError::unsupported("sign-in terminals cannot be exported")); }
+        Ok(String::from_utf8_lossy(&terminal.scrollback()).into_owned())
+    }
+
+    pub fn close_private(&self) {
+        let ids: Vec<_> = lock(&self.terminals).values().filter(|t| t.is_private()).map(|t| t.id.clone()).collect();
+        for id in ids { let _ = self.close(&id); }
     }
 
     /// Kills (if still running) and forgets the terminal. Output stays with
@@ -270,6 +304,11 @@ impl TerminalManager {
         let terminal = lock(&self.terminals).remove(id).ok_or_else(|| DesktopError::not_ready("terminal not found"))?;
         if !terminal.is_exited() {
             terminal.kill();
+        }
+        if terminal.private {
+            let mut scrollback = lock(&terminal.scrollback);
+            terminal.private_subscribed.store(true, Ordering::SeqCst);
+            scrollback.clear();
         }
         Ok(())
     }
@@ -330,6 +369,25 @@ mod tests {
         assert_eq!(output, serde_json::json!({"type": "output", "dataBase64": "aGk="}));
         let exit = serde_json::to_value(TerminalEvent::Exit { code: Some(3) }).unwrap();
         assert_eq!(exit, serde_json::json!({"type": "exit", "code": 3}));
+    }
+
+    #[tokio::test]
+    async fn sign_in_terminals_cannot_be_listed_or_exported_and_reload_stops_them() {
+        let manager = TerminalManager::new();
+        let spec = if cfg!(windows) { spawn("cmd.exe", &["/D", "/Q"]) } else { spawn("/bin/cat", &[]) };
+        let terminal = manager.open_private(spec).unwrap();
+        assert!(manager.list().is_empty());
+        assert!(manager.export(&terminal.id).is_err());
+        terminal.scrollback(); // Initial replay consumes private scrollback.
+        let mut events = terminal.subscribe();
+        terminal.write(if cfg!(windows) { b"echo one-time-code\r\n" } else { b"one-time-code\n" }).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), events.recv()).await.unwrap().unwrap();
+        assert!(terminal.scrollback().is_empty(), "live authentication output is not retained");
+        manager.close_private();
+        assert!(manager.get(&terminal.id).is_none());
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !terminal.is_exited() { tokio::time::sleep(Duration::from_millis(20)).await; }
+        }).await.expect("reload must terminate the private process");
     }
 
     #[tokio::test]

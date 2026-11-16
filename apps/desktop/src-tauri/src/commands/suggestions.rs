@@ -230,11 +230,19 @@ pub async fn reply_suggest(messages: [String; 3], state: State<'_, AppState>) ->
     } else {
         resolved.program
     };
-    if let Some(folder) = state.account_folder(provider, None) {
+    if let Some(folder) = state.try_account_folder(provider, None)? {
         match provider {
             Provider::Claude => profile = profile.with_set("CLAUDE_CONFIG_DIR", folder.to_string_lossy()),
             Provider::Codex => profile = profile.with_set("CODEX_HOME", folder.to_string_lossy()),
             Provider::Gemini => {
+                thingmaker_supervisor::agents::gemini::launch::require_isolated_token(&folder).map_err(DesktopError::unsupported)?;
+                let program = binary.clone();
+                let profile_folder = folder.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    thingmaker_supervisor::agents::gemini::probe::verify_file_auth(&program, std::time::Duration::from_secs(15))?;
+                    thingmaker_supervisor::agents::gemini::launch::prepare_file_auth(&profile_folder)
+                })
+                    .await.map_err(|error| DesktopError::io(error.to_string()))?.map_err(DesktopError::unsupported)?;
                 for (name, value) in thingmaker_supervisor::agents::gemini::launch::account_environment(Some(&folder)) {
                     profile = profile.with_set(name, value);
                 }

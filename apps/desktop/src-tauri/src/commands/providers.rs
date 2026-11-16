@@ -50,8 +50,8 @@ pub(crate) fn auth_status(resolved: &ResolvedProvider, folder: Option<&Path>) ->
         // "Signed in" for Local Models means Ollama answers: there is no
         // account. Its version stands where an account would.
         Provider::Local => match thingmaker_supervisor::agents::local::ollama::Ollama::local().version() {
-            Ok(version) => ProviderAuthStatus { provider: Provider::Local, logged_in: Some(true), method: Some("ollama".into()), account: Some(format!("Ollama {version}")), plan: None, problem: None },
-            Err(problem) => ProviderAuthStatus { provider: Provider::Local, logged_in: Some(false), method: Some("ollama".into()), account: None, plan: None, problem: Some(problem) },
+            Ok(version) => ProviderAuthStatus { setup_required: None, provider: Provider::Local, logged_in: Some(true), method: Some("ollama".into()), account: Some(format!("Ollama {version}")), plan: None, problem: None },
+            Err(problem) => ProviderAuthStatus { setup_required: None, provider: Provider::Local, logged_in: Some(false), method: Some("ollama".into()), account: None, plan: None, problem: Some(problem) },
         },
     }
 }
@@ -71,13 +71,15 @@ fn claude_environment(folder: Option<&Path>) -> EnvironmentProfile {
 /// CLI), so this runs off the command thread.
 #[tauri::command]
 pub async fn providers_status(state: State<'_, AppState>) -> CommandResult<Vec<ProviderInfo>> {
-    let resolved: Vec<(Provider, Result<ResolvedProvider, DesktopError>, Option<PathBuf>)> =
-        Provider::ALL.iter().map(|provider| (*provider, state.resolve_provider(*provider), state.account_folder(*provider, None))).collect();
+    let resolved: Vec<_> = Provider::ALL.iter().map(|provider| {
+        let result = state.resolve_provider(*provider).and_then(|resolved| state.try_account_folder(*provider, None).map(|folder| (resolved, folder)));
+        (*provider, result)
+    }).collect();
     tauri::async_runtime::spawn_blocking(move || {
         resolved
             .into_iter()
-            .map(|(provider, resolved, folder)| match resolved {
-                Ok(resolved) => ProviderInfo {
+            .map(|(provider, resolved)| match resolved {
+                Ok((resolved, folder)) => ProviderInfo {
                     provider,
                     label: provider.label(),
                     auth: Some(auth_status(&resolved, folder.as_deref())),
@@ -189,7 +191,7 @@ pub struct LoginStartResponse {
 pub fn provider_login_start(provider: Provider, on_event: Channel<LoginEvent>, account: Option<String>, state: State<'_, AppState>) -> CommandResult<LoginStartResponse> {
     let resolved = state.resolve_provider(provider)?;
     // Signing in to an account is signing in inside its folder.
-    let folder = state.account_folder(provider, account.as_deref());
+    let folder = state.try_account_folder(provider, account.as_deref())?;
     // Both sign in with the subscription: Claude Code's `--claudeai`, and
     // `codex login`, which is ChatGPT sign-in unless an API key is given.
     // `agy` has no headless sign-in; it shares the Antigravity app's.
@@ -227,20 +229,42 @@ pub fn provider_login_start(provider: Provider, on_event: Channel<LoginEvent>, a
 /// Antigravity's sign-in is interactive (setup, browser URL, code), so it
 /// runs in a provider-owned terminal rather than the line-only login flow.
 #[tauri::command]
-pub fn provider_login_terminal(account: String, state: State<'_, AppState>) -> CommandResult<thingmaker_supervisor::terminal::TerminalInfo> {
+pub async fn provider_login_terminal(account: String, state: State<'_, AppState>) -> CommandResult<thingmaker_supervisor::terminal::TerminalInfo> {
     use thingmaker_supervisor::{agents::accounts::DEFAULT_ACCOUNT, terminal::TerminalSpawn};
+    let generation = {
+        let mut generation = state.auth_terminal_generation.lock().unwrap_or_else(|p| p.into_inner());
+        *generation += 1;
+        *generation
+    };
     if account != DEFAULT_ACCOUNT && !state.accounts().iter().any(|a| a.provider == Provider::Gemini && a.id == account) {
         return Err(DesktopError::not_ready("that account is gone"));
     }
     let resolved = state.resolve_provider(Provider::Gemini)?;
-    let folder = state.account_folder(Provider::Gemini, Some(&account));
+    let folder = state.try_account_folder(Provider::Gemini, Some(&account))?;
+    if let Some(profile_folder) = folder.clone() {
+        let program = resolved.program.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            gemini::probe::verify_file_auth(&program, Duration::from_secs(15))?;
+            gemini::launch::prepare_file_auth(&profile_folder)
+        })
+            .await.map_err(|error| DesktopError::io(error.to_string()))?.map_err(DesktopError::unsupported)?;
+    }
     let cwd = state.data_dir.join("provider-sign-in");
     std::fs::create_dir_all(&cwd).map_err(|error| DesktopError::io(error.to_string()))?;
     let profile = gemini::launch::environment_for_account(folder.as_deref()).with_program_dir(&resolved.program);
-    let terminal = state.terminals.open(TerminalSpawn {
-        cwd, program: resolved.program, args: vec![],
+    let current_generation = state.auth_terminal_generation.lock().unwrap_or_else(|p| p.into_inner());
+    if *current_generation != generation {
+        return Err(DesktopError::not_ready("Sign-in cancelled because the interface reloaded."));
+    }
+    state.terminals.close_private();
+    state.auth_terminal_profiles.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    let terminal = state.terminals.open_private(TerminalSpawn {
+        cwd, program: resolved.program, args: gemini::launch::login_arguments(folder.as_deref()),
         env: profile.resolve(std::env::vars()).into_iter().collect(), cols: 100, rows: 28,
     })?;
+    if let Some(folder) = folder {
+        state.auth_terminal_profiles.lock().unwrap_or_else(|p| p.into_inner()).insert(terminal.id.clone(), folder);
+    }
     Ok(terminal.info())
 }
 
@@ -257,7 +281,7 @@ pub fn provider_login_cancel(run_id: String, state: State<'_, AppState>) -> Comm
 #[tauri::command]
 pub async fn provider_models(provider: Provider, state: State<'_, AppState>) -> CommandResult<Vec<ProviderModel>> {
     let resolved = state.resolve_provider(provider)?;
-    let folder = state.account_folder(provider, None);
+    let folder = state.try_account_folder(provider, None)?;
     // The app's own data directory, not a project: asking for the catalog
     // opens a session, and that should leave nothing in the user's workspace.
     let scratch = state.data_dir.join("provider-probe");
@@ -301,7 +325,7 @@ pub async fn provider_quota(provider: Provider, state: State<'_, AppState>) -> C
                 .map_err(|error| DesktopError::io(error.to_string()))??
         }
         Provider::Gemini => {
-            let folder = state.account_folder(Provider::Gemini, None);
+            let folder = state.try_account_folder(Provider::Gemini, None)?;
             tauri::async_runtime::spawn_blocking(move || gemini::quota::read_quota_for_account(&resolved.program, folder.as_deref(), Duration::from_secs(30)).map_err(DesktopError::io))
                 .await
                 .map_err(|error| DesktopError::io(error.to_string()))??
@@ -321,12 +345,13 @@ pub async fn provider_quota(provider: Provider, state: State<'_, AppState>) -> C
 #[tauri::command]
 pub async fn provider_logout(provider: Provider, account: Option<String>, state: State<'_, AppState>) -> CommandResult<()> {
     let resolved = state.resolve_provider(provider)?;
-    let folder = state.account_folder(provider, account.as_deref());
+    let folder = state.try_account_folder(provider, account.as_deref())?;
     let (args, environment) = match provider {
         Provider::Claude => (claude::auth::logout_args(&resolved.prefix_args), claude_environment(folder.as_deref())),
         Provider::Codex => (codex::probe::logout_args(), codex::probe::environment(folder.as_deref()).with_program_dir(&resolved.program)),
         Provider::Gemini => {
-            return Err(DesktopError::unsupported("Antigravity signs in and out through its own app: switch the account there, or run `agy` in a terminal."));
+            let folder = folder.as_deref().ok_or_else(|| DesktopError::unsupported("Sign out of the main account in the Antigravity app."))?;
+            return gemini::probe::logout_for_account(&resolved.program, folder, Duration::from_secs(15)).await.map_err(DesktopError::io);
         }
         Provider::Local => return Err(DesktopError::unsupported("Local Models have no account to sign out of.")),
     };

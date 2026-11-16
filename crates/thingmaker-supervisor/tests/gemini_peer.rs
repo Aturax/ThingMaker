@@ -158,6 +158,37 @@ async fn a_model_change_relaunches_on_the_same_conversation_before_the_next_turn
     let _ = actor.stop().await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn isolated_accounts_refresh_file_auth_on_relaunch_and_tools_inherit_no_ssh() {
+    use std::os::unix::fs::PermissionsExt;
+    if python().is_none() { return; }
+    let directory = tempfile::tempdir().unwrap();
+    let program = directory.path().join("agy");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/test-fixtures/acp/mock-agy.py");
+    std::fs::copy(fixture, &program).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let profile = directory.path().join("account");
+    std::fs::create_dir_all(profile.join(".gemini/antigravity-cli")).unwrap();
+    std::fs::write(profile.join(".gemini/antigravity-cli/antigravity-oauth-token"), "mock-private-token").unwrap();
+    let mut options = GeminiLaunchOptions::new(directory.path(), program.clone());
+    options.account_home = Some(profile.clone());
+    let target = LaunchTarget { executable: program, prefix_args: vec!["--mock-isolated".into()] };
+    let actor = SessionActor::open(SessionActorConfig::new(target, AgentLaunch::Gemini(options))).await.unwrap();
+    let marker = profile.join(".gemini/antigravity-cli/cache/antigravity-keyring-unavailable");
+    std::fs::OpenOptions::new().write(true).open(&marker).unwrap().set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH)).unwrap();
+    actor.set_config_option("model", serde_json::json!("gemini-3.1-pro-high")).await.unwrap();
+    let mut subscription = actor.subscribe();
+    actor.submit_text("r1", "verify the child environment").await.unwrap();
+    let events = until_settled(&mut subscription).await;
+    assert_eq!(settled_phase(&events).unwrap().0, TurnPhase::Succeeded);
+    assert!(marker.metadata().unwrap().modified().unwrap() > std::time::SystemTime::now() - Duration::from_secs(10));
+    let history = actor.history(0, 10_000).await.unwrap();
+    let clean_children = history.iter().filter(|event| matches!(&event.payload, SessionEvent::Diagnostic { text } | SessionEvent::AgentOutput { text } if text.contains("child-ssh-env: {}"))).count();
+    assert_eq!(clean_children, 2, "both the first launch and resume must give tools a clean environment");
+    actor.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_spent_account_fails_the_turn_as_a_rate_limit() {
     let Some(config) = config(&["--mock-limit"], None, PermissionStance::AcceptEdits) else { return };

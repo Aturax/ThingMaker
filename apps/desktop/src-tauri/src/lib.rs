@@ -154,6 +154,18 @@ pub fn run() {
             tray.build(app)?;
             Ok(())
         })
+        .on_page_load(|window, payload| {
+            // React state is gone after navigation/reload. A sign-in process
+            // must not outlive the renderer that owns its terminal.
+            if window.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+                && let Some(state) = window.try_state::<state::AppState>()
+            {
+                let mut generation = state.auth_terminal_generation.lock().unwrap_or_else(|p| p.into_inner());
+                *generation += 1;
+                state.terminals.close_private();
+                state.auth_terminal_profiles.lock().unwrap_or_else(|p| p.into_inner()).clear();
+            }
+        })
         .on_window_event(|window, event| {
             if window.label() != "main" {
                 return;

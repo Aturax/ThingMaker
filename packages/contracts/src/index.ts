@@ -617,6 +617,7 @@ export const JOB_EVENT = "thingmaker://job";
 export type ProviderAuthStatus = {
   provider: Provider;
   loggedIn?: boolean;
+  setupRequired?: boolean;
   method?: string;
   account?: string;
   plan?: string;

@@ -175,6 +175,7 @@ export type LockedResume = { workspaceId: string; sessionId: string; error: Desk
 
 export type SignInRun = {
   terminal?: import("@thingmaker/contracts").TerminalInfo;
+  finishing?: boolean;
   runId: string | null;
   provider: Provider;
   /** The account signing in, when it is not the active one. */
@@ -3219,12 +3220,14 @@ export const useStore = create<State>((set, get) => ({
     const previous = get().signIn;
     if (previous?.state === "starting" || previous?.state === "running") return;
     if (provider === "gemini") account ??= "default";
-    set({ signIn: { runId: null, provider, ...(account ? { account } : {}), lines: [], urls: [], state: "starting" }, error: null });
+    const starting: SignInRun = { runId: null, provider, ...(account ? { account } : {}), lines: [], urls: [], state: "starting" };
+    set({ signIn: starting, error: null });
     try {
       if (provider === "gemini") {
         const terminal = await api.providerLoginTerminal(account!);
         const run = get().signIn;
-        if (run?.provider === provider && run.account === account) set({ signIn: { ...run, runId: terminal.id, terminal, state: "running" } });
+        if (run === starting) set({ signIn: { ...run, runId: terminal.id, terminal, state: "running" } });
+        else await api.terminalClose(terminal.id).catch(() => undefined);
         return;
       }
       const { runId } = await api.providerLoginStart(provider, (event: LoginEvent) => {
@@ -3254,7 +3257,7 @@ export const useStore = create<State>((set, get) => ({
       const run = get().signIn;
       if (run && run.provider === provider) set({ signIn: { ...run, runId } });
     } catch (error) {
-      set({ error: asError(error), signIn: null });
+      if (provider !== "gemini" || get().signIn === starting) set({ error: asError(error), signIn: null });
     }
   },
 
@@ -3335,32 +3338,53 @@ export const useStore = create<State>((set, get) => ({
 
   async finishGeminiSignIn() {
     const run = get().signIn;
-    if (run?.provider !== "gemini" || !run.terminal) return;
+    if (run?.provider !== "gemini" || !run.terminal || run.finishing) return;
+    set({ signIn: { ...run, finishing: true } });
     try {
       const list = await api.accountsList("gemini");
       if (get().signIn?.runId !== run.runId || get().signIn?.state !== "running") return;
       set({ accounts: { ...get().accounts, gemini: list } });
-      if (!list.find((entry) => entry.id === run.account)?.auth?.loggedIn) {
-        set({ error: asError(t("Finish signing in inside the terminal first.")) });
+      const auth = list.find((entry) => entry.id === run.account)?.auth;
+      if (auth?.setupRequired) {
+        await api.terminalClose(run.terminal.id);
+        if (get().signIn?.runId !== run.runId || get().signIn?.state !== "running") return;
+        set({ signIn: null });
+        await get().startSignIn("gemini", run.account);
+        return;
+      }
+      if (!auth?.loggedIn) {
+        set({ error: asError(auth?.problem ?? t("Finish signing in inside the terminal first.")) });
         return;
       }
       await api.terminalClose(run.terminal.id);
+      if (get().signIn?.runId !== run.runId || get().signIn?.state !== "running") return;
       const { terminal: _terminal, ...finished } = run;
       set({ signIn: { ...finished, state: "success" }, error: null });
       await get().loadProviders();
       void get().refreshUsage("gemini");
     } catch (error) { set({ error: asError(error) }); }
+    finally {
+      const current = get().signIn;
+      if (current?.runId === run.runId && current.finishing) set({ signIn: { ...current, finishing: false } });
+    }
   },
 
   async cancelSignIn() {
     const run = get().signIn;
-    if (!run?.runId) return;
+    if (!run) return;
     try {
-      if (run.provider === "gemini" && run.terminal) {
-        await api.terminalClose(run.terminal.id);
-        const { terminal: _terminal, ...cancelled } = run;
-        set({ signIn: { ...cancelled, state: "cancelled" } });
-      } else {
+      if (run.provider === "gemini") {
+        set({ signIn: { ...run, state: "cancelled" } });
+        if (run.terminal) {
+          try { await api.terminalClose(run.terminal.id); }
+          catch (error) { if (asError(error).code !== "NOT_READY") throw error; }
+        }
+        const current = get().signIn;
+        if (current?.runId === run.runId && current.state === "cancelled") {
+          const { terminal: _terminal, ...cancelled } = current;
+          set({ signIn: cancelled });
+        }
+      } else if (run.runId) {
         await api.providerLoginCancel(run.runId);
       }
     } catch (error) {

@@ -46,6 +46,7 @@ export function ProviderAccounts({ provider }: { provider: Provider }) {
   const list = accounts ?? [];
   return (
     <div className="provider-accounts">
+      {provider === "gemini" && <p className="small muted">{t("Additional Gemini accounts use a private home folder. CLI settings and history are shared; files saved in that home are kept when you remove the account.")}</p>}
       {list.length > 1 && <span className="local-cap">{t("Accounts")}</span>}
       {list.length > 1 &&
         list.map((account) => {
@@ -74,15 +75,15 @@ export function ProviderAccounts({ provider }: { provider: Provider }) {
                 ) : (
                   <span className="provider-account-text">
                     <strong>{accountName(account)}</strong>
-                    <span className="small muted">
+                    <span className="small muted" title={account.auth?.problem ?? undefined}>
                       {signedIn ? [account.auth?.account, account.auth?.plan].filter(Boolean).join(" · ") || t("Signed in") : account.auth?.problem ? t("Could not be asked") : t("Not signed in")}
                     </span>
                   </span>
                 )}
               </label>
-              {!signedIn && (
+              {(!signedIn || account.auth?.setupRequired) && (
                 <button className="button button-small" disabled={signingIn} onClick={() => void startSignIn(provider, account.isDefault ? undefined : account.id)} type="button">
-                  {busy ? t("Signing in…") : t("Sign in")}
+                  {busy ? t("Signing in…") : account.auth?.setupRequired ? t("Finish setup") : t("Sign in")}
                 </button>
               )}
               {!account.isDefault && renaming?.id !== account.id && (

@@ -3,6 +3,8 @@
  * model menu's account switch).
  */
 export const accounts: Record<string, string> = {
+  "Finish setup": "Completar configuración",
+  "Additional Gemini accounts use a private home folder. CLI settings and history are shared; files saved in that home are kept when you remove the account.": "Las cuentas adicionales de Gemini usan una carpeta personal privada. Los ajustes y el historial del CLI se comparten; los archivos guardados en esa carpeta se conservan al quitar la cuenta.",
   "Uses your Google account through Antigravity CLI": "Usa tu cuenta de Google a través de Antigravity CLI",
   "Finish signing in inside the terminal first.": "Termina de iniciar sesión en el terminal primero.",
   "Complete Antigravity setup here, copy its sign-in URL into your browser, and paste the returned code into the terminal. Then choose Done signing in.": "Completa aquí la configuración de Antigravity, copia su URL de inicio de sesión en el navegador y pega el código recibido en el terminal. Después, pulsa Terminé de iniciar sesión.",

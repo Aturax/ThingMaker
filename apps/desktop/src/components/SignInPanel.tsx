@@ -287,7 +287,7 @@ function ProviderRow({ info }: { info: ProviderInfo }) {
             <div className="provider-login-terminal">
               <p className="small muted">{t("Complete Antigravity setup here, copy its sign-in URL into your browser, and paste the returned code into the terminal. Then choose Done signing in.")}</p>
               <TerminalPane workspaceId={`gemini-login-${run.account}`} initialInfo={run.terminal} onClose={() => void cancelSignIn()} />
-              <button className="button button-primary" onClick={() => void useStore.getState().finishGeminiSignIn()} type="button">{t("Done signing in")}</button>
+              <button className="button button-primary" disabled={run.finishing} onClick={() => void useStore.getState().finishGeminiSignIn()} type="button">{t("Done signing in")}</button>
             </div>
           )}
           {run && !run.terminal && output && <pre className="text log">{run.lines.map((line) => `${line.stream === "stderr" ? "! " : "  "}${line.text}`).join("\n") || t("(no output yet)")}</pre>}

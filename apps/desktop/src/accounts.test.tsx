@@ -115,4 +115,74 @@ describe("Gemini accounts", () => {
     await useStore.getState().startSignIn("gemini", "acct-1");
     expect(api.providerLoginTerminal).toHaveBeenCalledTimes(2);
   });
+
+  it("surfaces an isolation failure without accepting the sign-in", async () => {
+    vi.mocked(api.providerLoginTerminal).mockResolvedValue(terminal);
+    vi.mocked(api.accountsList).mockResolvedValue([{ ...work, auth: { provider: "gemini", loggedIn: false, problem: "Antigravity did not save an isolated sign-in token." } }]);
+    await useStore.getState().startSignIn("gemini", "acct-1");
+    await useStore.getState().finishGeminiSignIn();
+    expect(useStore.getState().error?.message).toContain("isolated sign-in token");
+    expect(useStore.getState().signIn?.state).toBe("running");
+    expect(api.terminalClose).not.toHaveBeenCalled();
+  });
+
+  it("continues to CLI setup after Google login instead of declaring success early", async () => {
+    vi.mocked(api.providerLoginTerminal).mockResolvedValueOnce(terminal).mockResolvedValueOnce({ ...terminal, id: "setup-terminal" });
+    vi.mocked(api.accountsList).mockResolvedValue([{ ...main, provider: "gemini" }, { ...work, auth: { provider: "gemini", loggedIn: true, setupRequired: true } }]);
+    await useStore.getState().startSignIn("gemini", "acct-1");
+    await useStore.getState().finishGeminiSignIn();
+    expect(api.terminalClose).toHaveBeenCalledWith(terminal.id);
+    expect(api.providerLoginTerminal).toHaveBeenCalledTimes(2);
+    expect(useStore.getState().signIn).toMatchObject({ state: "running", terminal: { id: "setup-terminal" } });
+    vi.mocked(api.accountsList).mockResolvedValue([work]);
+    await useStore.getState().finishGeminiSignIn();
+    expect(useStore.getState().signIn?.state).toBe("success");
+  });
+
+  it("offers setup for an account that is already authenticated", async () => {
+    vi.mocked(api.accountsList).mockResolvedValue([{ ...main, provider: "gemini" }, { ...work, auth: { provider: "gemini", loggedIn: true, setupRequired: true } }]);
+    vi.mocked(api.providerLoginTerminal).mockResolvedValue(terminal);
+    render(<ProviderAccounts provider="gemini" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Finish setup" }));
+    await waitFor(() => expect(api.providerLoginTerminal).toHaveBeenCalledWith("acct-1"));
+  });
+
+  it("closes a late terminal response after cancellation during startup", async () => {
+    let complete!: (value: TerminalInfo) => void;
+    vi.mocked(api.providerLoginTerminal).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const starting = useStore.getState().startSignIn("gemini", "acct-1");
+    await useStore.getState().cancelSignIn();
+    complete(terminal);
+    await starting;
+    expect(api.terminalClose).toHaveBeenCalledWith(terminal.id);
+    expect(useStore.getState().signIn).toMatchObject({ state: "cancelled" });
+    expect(useStore.getState().signIn?.terminal).toBeUndefined();
+  });
+
+  it("checks a finishing sign-in only once even when Done is pressed twice", async () => {
+    vi.mocked(api.providerLoginTerminal).mockResolvedValue(terminal);
+    await useStore.getState().startSignIn("gemini", "acct-1");
+    let complete!: (value: AccountView[]) => void;
+    vi.mocked(api.accountsList).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const first = useStore.getState().finishGeminiSignIn();
+    const second = useStore.getState().finishGeminiSignIn();
+    expect(api.accountsList).toHaveBeenCalledTimes(1);
+    complete([work]);
+    await Promise.all([first, second]);
+    expect(api.terminalClose).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().signIn?.state).toBe("success");
+  });
+
+  it("does not reopen setup after cancelling an in-flight sign-in check", async () => {
+    vi.mocked(api.providerLoginTerminal).mockResolvedValue(terminal);
+    await useStore.getState().startSignIn("gemini", "acct-1");
+    let complete!: (value: AccountView[]) => void;
+    vi.mocked(api.accountsList).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const finishing = useStore.getState().finishGeminiSignIn();
+    await useStore.getState().cancelSignIn();
+    complete([{ ...work, auth: { provider: "gemini", loggedIn: true, setupRequired: true } }]);
+    await finishing;
+    expect(api.providerLoginTerminal).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().signIn?.state).toBe("cancelled");
+  });
 });

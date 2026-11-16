@@ -49,6 +49,31 @@ pub fn read_quota(program: &Path, timeout: Duration) -> Result<QuotaSnapshot, St
 }
 
 pub fn read_quota_for_account(program: &Path, folder: Option<&Path>, timeout: Duration) -> Result<QuotaSnapshot, String> {
+    quota_from_status(&read_status_payload(program, folder, timeout, false)?, now_unix_ms())
+}
+
+/// Identity comes from agy's documented status line, never from credentials.
+pub fn read_identity_for_account(program: &Path, folder: Option<&Path>, timeout: Duration) -> Result<(Option<String>, Option<String>), String> {
+    let payload = read_status_payload(program, folder, timeout, true)?;
+    Ok(identity_from_status(&payload))
+}
+
+fn identity_from_status(payload: &Value) -> (Option<String>, Option<String>) {
+    let text = |key| payload.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    (text("email"), text("plan_tier"))
+}
+
+fn payload_ready(payload: &Value, identity: bool) -> bool {
+    if identity { identity_from_status(payload).0.is_some() }
+    else { quota_from_status(payload, now_unix_ms()).is_ok() }
+}
+
+fn read_status_payload(program: &Path, folder: Option<&Path>, timeout: Duration, identity: bool) -> Result<Value, String> {
+    if let Some(folder) = folder {
+        super::launch::require_isolated_token(folder)?;
+        super::probe::verify_file_auth(program, timeout)?;
+        super::launch::prepare_file_auth(folder)?;
+    }
     let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
     // agy asks whether to trust the folder it starts in. It starts in an empty
     // folder of its own, trusted for this run only (`--settings` is never
@@ -122,9 +147,9 @@ pub fn read_quota_for_account(program: &Path, folder: Option<&Path>, timeout: Du
     let result = loop {
         if let Ok(bytes) = std::fs::read(&output)
             && let Ok(payload) = serde_json::from_slice::<Value>(&bytes)
-            && let Ok(snapshot) = quota_from_status(&payload, now_unix_ms())
+            && payload_ready(&payload, identity)
         {
-            break Ok(snapshot);
+            break Ok(payload);
         }
         if in_setup.load(Ordering::Relaxed) {
             break Err(SETUP_HINT.into());
@@ -262,6 +287,25 @@ pub fn quota_from_status(payload: &Value, now: u64) -> Result<QuotaSnapshot, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_uses_only_the_status_lines_public_email_and_plan() {
+        assert_eq!(identity_from_status(&json!({"email": " user@example.com ", "plan_tier": "Ultra", "access_token": "never surfaced"})),
+            (Some("user@example.com".into()), Some("Ultra".into())));
+        assert_eq!(identity_from_status(&json!({"email": " ", "plan_tier": null})), (None, None));
+    }
+
+    #[test]
+    fn initialization_payloads_do_not_end_identity_or_quota_probes() {
+        let initializing = json!({"agent_state":"initializing", "quota":{}});
+        assert!(!payload_ready(&initializing, true));
+        assert!(!payload_ready(&initializing, false));
+        let signed_in = json!({"email":"other@example.com", "quota":{}});
+        assert!(payload_ready(&signed_in, true));
+        assert!(!payload_ready(&signed_in, false));
+        let quota = json!({"quota":{"gemini-weekly":{"remaining_fraction":0.5}}});
+        assert!(payload_ready(&quota, false));
+    }
 
     #[test]
     fn reads_captured_agy_1_5_6_buckets_without_blocking_other_models() {
