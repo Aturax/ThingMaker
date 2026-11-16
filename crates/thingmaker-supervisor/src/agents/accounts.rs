@@ -260,14 +260,23 @@ pub fn remove_gemini_profile(folder: &Path) -> std::io::Result<()> {
 
 fn profile_link(path: &Path) -> std::io::Result<bool> {
     #[cfg(windows)]
-    if junction::exists(path)? { return Ok(true); }
+    if is_junction(path)? { return Ok(true); }
     Ok(path.symlink_metadata()?.file_type().is_symlink())
+}
+
+#[cfg(windows)]
+pub(crate) fn is_junction(path: &Path) -> std::io::Result<bool> {
+    match junction::exists(path) {
+        Ok(value) => Ok(value),
+        Err(error) if error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_NOT_A_REPARSE_POINT as i32) => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 fn remove_profile_link(path: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
-        if junction::exists(path)? { return junction::delete(path); }
+        if is_junction(path)? { return junction::delete(path); }
         if path.is_dir() { return std::fs::remove_dir(path); }
     }
     std::fs::remove_file(path)

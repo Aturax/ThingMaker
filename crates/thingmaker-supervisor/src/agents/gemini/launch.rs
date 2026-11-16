@@ -83,7 +83,7 @@ pub fn prepare_file_auth(folder: &Path) -> Result<(), String> {
         if let Ok(metadata) = path.symlink_metadata() {
             if !metadata.is_dir() { return Err(ISOLATION_ERROR.into()); }
             #[cfg(windows)]
-            if junction::exists(path).map_err(|e| e.to_string())? { return Err(ISOLATION_ERROR.into()); }
+            if super::super::accounts::is_junction(path).map_err(|e| e.to_string())? { return Err(ISOLATION_ERROR.into()); }
         } else { std::fs::create_dir_all(path).map_err(|e| e.to_string())?; }
         #[cfg(unix)]
         {
