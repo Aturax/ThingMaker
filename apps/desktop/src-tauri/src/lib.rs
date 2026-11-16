@@ -380,6 +380,7 @@ pub fn run() {
             commands::providers::providers_status,
             commands::providers::provider_set_location,
             commands::providers::provider_login_start,
+            commands::providers::provider_login_terminal,
             commands::providers::provider_login_cancel,
             commands::providers::provider_models,
             commands::providers::provider_quota,

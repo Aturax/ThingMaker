@@ -17,6 +17,7 @@ import { useStore, type SignInRun } from "../store";
 import { t } from "../i18n";
 import { LocalModelsCard } from "./LocalModelsCard";
 import { ProviderAccounts } from "./ProviderAccounts";
+import { TerminalPane } from "./TerminalPane";
 import { UsageMeter, resetTime, untilText } from "./UsageMeter";
 import { windowName } from "./UsageLine";
 import { IconDots, IconRefresh } from "./icons";
@@ -25,7 +26,7 @@ import { IconDots, IconRefresh } from "./icons";
 const USES = (): Record<Provider, string> => ({
   claude: t("Uses your Claude Pro, Max, Team or Enterprise plan"),
   codex: t("Uses your ChatGPT plan"),
-  gemini: t("Signs in through the Antigravity app"),
+  gemini: t("Uses your Google account through Antigravity CLI"),
   local: t("Runs models on this computer through Ollama: free, and private"),
 });
 
@@ -33,12 +34,9 @@ const USES = (): Record<Provider, string> => ({
 const SIGNS_IN_WITH = (): Record<Provider, string> => ({
   claude: t("Your Claude plan, through its ACP adapter"),
   codex: t("Your ChatGPT plan, through its app-server"),
-  gemini: t("The Antigravity app's sign-in, through its own CLI"),
+  gemini: t("Your Google account, through Antigravity CLI"),
   local: t("Ollama on this computer; there is nothing to sign in to"),
 });
-
-/** Providers whose sign-in lives in another app rather than a flow here. */
-const SIGNS_IN_ELSEWHERE: Partial<Record<Provider, true>> = { gemini: true };
 
 /** Where a sign-in run is, as the person reads it. */
 const SIGN_IN_STATE = (): Record<SignInRun["state"], string> => ({
@@ -131,7 +129,6 @@ function ProviderRow({ info }: { info: ProviderInfo }) {
   const auth = info.auth;
   const run = signIn?.provider === provider ? signIn : null;
   const signingIn = run !== null && (run.state === "starting" || run.state === "running");
-  const elsewhere = SIGNS_IN_ELSEWHERE[provider] === true;
   const updating = update.running === provider;
   const result = update.results[provider];
   const canUpdateTo = version?.updateAvailable && version.canUpdate ? version.latest : undefined;
@@ -175,7 +172,7 @@ function ProviderRow({ info }: { info: ProviderInfo }) {
     <button className="button" onClick={() => void cancelSignIn()} type="button">
       {t("Cancel")}
     </button>
-  ) : auth?.loggedIn === false && !elsewhere ? (
+  ) : auth?.loggedIn === false ? (
     <button className="button button-primary" disabled={signIn?.state === "running"} onClick={() => void startSignIn(provider)} type="button">
       {t("Sign in")}
     </button>
@@ -209,7 +206,6 @@ function ProviderRow({ info }: { info: ProviderInfo }) {
           </div>
           <div className="provider-sub">
             {auth?.loggedIn === true && !signingIn && <Meters provider={provider} />}
-            {elsewhere && auth?.loggedIn === true && <span>{t("Signed in through Antigravity")}</span>}
             {info.resolved && auth?.loggedIn === false && !signingIn && <span>{USES()[provider]}</span>}
             {!info.resolved && <span>{t("ThingMaker could not find its program.")}</span>}
           </div>
@@ -272,7 +268,7 @@ function ProviderRow({ info }: { info: ProviderInfo }) {
 
       {showDrawer && (
         <div className="provider-drawer">
-          {run && (
+          {run && !run.terminal && (
             <div className="provider-progress">
               <span>{SIGN_IN_STATE()[run.state]}</span>
               <span className="composer-spacer" />
@@ -287,7 +283,14 @@ function ProviderRow({ info }: { info: ProviderInfo }) {
               </button>
             </div>
           )}
-          {run && output && <pre className="text log">{run.lines.map((line) => `${line.stream === "stderr" ? "! " : "  "}${line.text}`).join("\n") || t("(no output yet)")}</pre>}
+          {run?.terminal && (
+            <div className="provider-login-terminal">
+              <p className="small muted">{t("Complete Antigravity setup here, copy its sign-in URL into your browser, and paste the returned code into the terminal. Then choose Done signing in.")}</p>
+              <TerminalPane workspaceId={`gemini-login-${run.account}`} initialInfo={run.terminal} onClose={() => void cancelSignIn()} />
+              <button className="button button-primary" onClick={() => void useStore.getState().finishGeminiSignIn()} type="button">{t("Done signing in")}</button>
+            </div>
+          )}
+          {run && !run.terminal && output && <pre className="text log">{run.lines.map((line) => `${line.stream === "stderr" ? "! " : "  "}${line.text}`).join("\n") || t("(no output yet)")}</pre>}
           {result && <p className={`small ${result.ok ? "muted" : "chip-warn-text"}`}>{result.text}</p>}
           {showModels && (
             <div className="provider-models">
@@ -350,12 +353,6 @@ function ProviderRow({ info }: { info: ProviderInfo }) {
                   (info.problem ?? t("not found"))
                 )}
               </dd>
-              {elsewhere && (
-                <>
-                  <dt>{t("Accounts")}</dt>
-                  <dd>{t("Sign in or switch accounts in the Antigravity app, or run `agy` once in a terminal.")}</dd>
-                </>
-              )}
               {provider === "gemini" && (
                 <>
                   <dt>{t("Good to know")}</dt>
@@ -371,6 +368,7 @@ function ProviderRow({ info }: { info: ProviderInfo }) {
 }
 
 export function SignInPanel() {
+  const accounts = useStore((s) => s.accounts);
   const providers = useStore((s) => s.providers);
   const loadProviders = useStore((s) => s.loadProviders);
   const loadProviderVersions = useStore((s) => s.loadProviderVersions);
@@ -429,7 +427,7 @@ export function SignInPanel() {
         <p className="muted small">{t("Asking each provider…")}</p>
       ) : (
         <ul className="providers">
-          {providers.map((info) => (info.provider === "local" ? <LocalModelsCard info={info} key={info.provider} /> : <ProviderRow info={info} key={info.provider} />))}
+          {providers.map((info) => (info.provider === "local" ? <LocalModelsCard info={info} key={info.provider} /> : <ProviderRow info={info} key={`${info.provider}-${accounts[info.provider]?.find((account) => account.active)?.id ?? "default"}`} />))}
         </ul>
       )}
     </div>

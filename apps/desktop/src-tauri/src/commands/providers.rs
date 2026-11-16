@@ -46,7 +46,7 @@ pub(crate) fn auth_status(resolved: &ResolvedProvider, folder: Option<&Path>) ->
     match resolved.provider {
         Provider::Claude => claude::auth::read_status(&resolved.program, &resolved.prefix_args, folder, Duration::from_secs(30)),
         Provider::Codex => codex::probe::read_status(&resolved.program, folder, Duration::from_secs(30)),
-        Provider::Gemini => gemini::probe::read_status(&resolved.program, Duration::from_secs(30)),
+        Provider::Gemini => gemini::probe::read_status_for_account(&resolved.program, folder, Duration::from_secs(30)),
         // "Signed in" for Local Models means Ollama answers: there is no
         // account. Its version stands where an account would.
         Provider::Local => match thingmaker_supervisor::agents::local::ollama::Ollama::local().version() {
@@ -224,6 +224,26 @@ pub fn provider_login_start(provider: Provider, on_event: Channel<LoginEvent>, a
     Ok(LoginStartResponse { run_id })
 }
 
+/// Antigravity's sign-in is interactive (setup, browser URL, code), so it
+/// runs in a provider-owned terminal rather than the line-only login flow.
+#[tauri::command]
+pub fn provider_login_terminal(account: String, state: State<'_, AppState>) -> CommandResult<thingmaker_supervisor::terminal::TerminalInfo> {
+    use thingmaker_supervisor::{agents::accounts::DEFAULT_ACCOUNT, terminal::TerminalSpawn};
+    if account != DEFAULT_ACCOUNT && !state.accounts().iter().any(|a| a.provider == Provider::Gemini && a.id == account) {
+        return Err(DesktopError::not_ready("that account is gone"));
+    }
+    let resolved = state.resolve_provider(Provider::Gemini)?;
+    let folder = state.account_folder(Provider::Gemini, Some(&account));
+    let cwd = state.data_dir.join("provider-sign-in");
+    std::fs::create_dir_all(&cwd).map_err(|error| DesktopError::io(error.to_string()))?;
+    let profile = gemini::launch::environment_for_account(folder.as_deref()).with_program_dir(&resolved.program);
+    let terminal = state.terminals.open(TerminalSpawn {
+        cwd, program: resolved.program, args: vec![],
+        env: profile.resolve(std::env::vars()).into_iter().collect(), cols: 100, rows: 28,
+    })?;
+    Ok(terminal.info())
+}
+
 #[tauri::command]
 pub fn provider_login_cancel(run_id: String, state: State<'_, AppState>) -> CommandResult<bool> {
     let sender = state.auth_runs.lock().unwrap_or_else(|p| p.into_inner()).remove(&run_id);
@@ -244,7 +264,7 @@ pub async fn provider_models(provider: Provider, state: State<'_, AppState>) -> 
     tauri::async_runtime::spawn_blocking(move || match provider {
         Provider::Claude => claude::auth::read_models_for_account(&resolved.program, &resolved.prefix_args, &scratch, folder.as_deref(), Duration::from_secs(45)).map_err(DesktopError::io),
         Provider::Codex => codex::probe::read_models(&resolved.program, folder.as_deref(), Duration::from_secs(45)).map_err(DesktopError::io),
-        Provider::Gemini => gemini::probe::read_models(&resolved.program, Duration::from_secs(45)).map_err(DesktopError::io),
+        Provider::Gemini => gemini::probe::read_models_for_account(&resolved.program, folder.as_deref(), Duration::from_secs(45)).map_err(DesktopError::io),
         Provider::Local => {
             let _ = &resolved;
             thingmaker_supervisor::agents::local::ollama::Ollama::local().models().map(|models| thingmaker_supervisor::agents::local::catalog(&models)).map_err(DesktopError::not_ready)
@@ -281,7 +301,8 @@ pub async fn provider_quota(provider: Provider, state: State<'_, AppState>) -> C
                 .map_err(|error| DesktopError::io(error.to_string()))??
         }
         Provider::Gemini => {
-            tauri::async_runtime::spawn_blocking(move || gemini::quota::read_quota(&resolved.program, Duration::from_secs(30)).map_err(DesktopError::io))
+            let folder = state.account_folder(Provider::Gemini, None);
+            tauri::async_runtime::spawn_blocking(move || gemini::quota::read_quota_for_account(&resolved.program, folder.as_deref(), Duration::from_secs(30)).map_err(DesktopError::io))
                 .await
                 .map_err(|error| DesktopError::io(error.to_string()))??
         }

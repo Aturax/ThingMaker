@@ -41,6 +41,23 @@ pub fn environment() -> crate::security::EnvironmentProfile {
     crate::security::EnvironmentProfile::trusted_local().with_set(DISABLE_AUTO_UPDATE, "1")
 }
 
+/// The account's own home, with SSH-style auth so agy uses its private token
+/// file instead of the OS keyring shared with the Antigravity app. This also
+/// gives sign-in a browser URL and code prompt inside ThingMaker's terminal.
+/// The default account keeps its ordinary local/keyring authentication.
+pub fn account_environment(folder: Option<&Path>) -> Vec<(String, String)> {
+    let mut env = vec![(DISABLE_AUTO_UPDATE.into(), "1".into())];
+    if let Some(folder) = folder {
+        let path = folder.to_string_lossy().into_owned();
+        env.extend([("HOME".into(), path.clone()), ("USERPROFILE".into(), path), ("SSH_CONNECTION".into(), "127.0.0.1 1 127.0.0.1 2".into())]);
+    }
+    env
+}
+
+pub fn environment_for_account(folder: Option<&Path>) -> crate::security::EnvironmentProfile {
+    account_environment(folder).into_iter().fold(environment(), |profile, (name, value)| profile.with_set(name, value))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeminiLaunchOptions {
     /// Canonical workspace root; the process's working directory.
@@ -57,6 +74,7 @@ pub struct GeminiLaunchOptions {
     /// The conversation to resume.
     pub resume: Option<String>,
     pub permission_mode: PermissionStance,
+    pub account_home: Option<PathBuf>,
 }
 
 impl GeminiLaunchOptions {
@@ -69,6 +87,7 @@ impl GeminiLaunchOptions {
             effort: None,
             resume: None,
             permission_mode: PermissionStance::ReadOnly,
+            account_home: None,
         }
     }
 
@@ -128,6 +147,22 @@ pub fn find_program(home: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extra_accounts_use_their_own_home_and_bypass_the_shared_keyring() {
+        let default = environment_for_account(None).resolve([(String::from("HOME"), String::from("/main"))]);
+        assert_eq!(default.get("HOME").map(String::as_str), Some("/main"));
+        assert!(!default.contains_key("SSH_CONNECTION"));
+        let extra = environment_for_account(Some(Path::new("/accounts/work")))
+            .resolve([(String::from("HOME"), String::from("/main")), (String::from("AGY_ADC_AUTH"), String::from("true"))]);
+        assert_eq!(extra["HOME"], "/accounts/work");
+        assert_eq!(extra["USERPROFILE"], "/accounts/work");
+        assert!(extra.contains_key("SSH_CONNECTION"));
+        assert!(!extra.contains_key("AGY_ADC_AUTH"), "ambient API/enterprise credentials must not replace the chosen account");
+        let mut options = GeminiLaunchOptions::new("/w", "/agy");
+        options.account_home = Some(PathBuf::from("/accounts/work"));
+        assert_eq!(crate::agents::AgentLaunch::Gemini(options).environment(), account_environment(Some(Path::new("/accounts/work"))));
+    }
 
     #[test]
     fn a_trusted_workspace_edits_and_runs_commands_and_an_inspected_one_plans() {

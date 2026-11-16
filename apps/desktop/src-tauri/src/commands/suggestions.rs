@@ -234,6 +234,11 @@ pub async fn reply_suggest(messages: [String; 3], state: State<'_, AppState>) ->
         match provider {
             Provider::Claude => profile = profile.with_set("CLAUDE_CONFIG_DIR", folder.to_string_lossy()),
             Provider::Codex => profile = profile.with_set("CODEX_HOME", folder.to_string_lossy()),
+            Provider::Gemini => {
+                for (name, value) in thingmaker_supervisor::agents::gemini::launch::account_environment(Some(&folder)) {
+                    profile = profile.with_set(name, value);
+                }
+            }
             _ => {}
         }
     }

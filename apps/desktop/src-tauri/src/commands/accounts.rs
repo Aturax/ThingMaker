@@ -1,4 +1,4 @@
-//! More than one account per provider (Claude Code, Codex): list, add,
+//! More than one account per provider (Claude Code, Codex, Gemini): list, add,
 //! rename, remove, and pick the active one. See `agents::accounts`.
 //!
 //! The active account applies to sessions started from then on, and to the
@@ -116,7 +116,11 @@ pub async fn account_remove(provider: Provider, id: String, state: State<'_, App
     if id == DEFAULT_ACCOUNT || !accounts::valid_id(&id) {
         return Err(DesktopError::unsupported("your own account cannot be removed here"));
     }
-    let _ = super::providers::provider_logout(provider, Some(id.clone()), state.clone()).await;
+    // Gemini extra accounts use private files, never the shared keyring.
+    // Removing their home clears their local sign-in without touching the app.
+    if provider != Provider::Gemini {
+        let _ = super::providers::provider_logout(provider, Some(id.clone()), state.clone()).await;
+    }
     let folder = accounts::account_folder(&state.data_dir, provider, &id);
     // Removes links, never what they point to.
     let _ = std::fs::remove_dir_all(&folder);

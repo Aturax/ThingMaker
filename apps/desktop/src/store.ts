@@ -174,6 +174,7 @@ export type OpenMode = { mode: "new" } | { mode: "resume"; session_id: string };
 export type LockedResume = { workspaceId: string; sessionId: string; error: DesktopError };
 
 export type SignInRun = {
+  terminal?: import("@thingmaker/contracts").TerminalInfo;
   runId: string | null;
   provider: Provider;
   /** The account signing in, when it is not the active one. */
@@ -560,6 +561,7 @@ type State = {
    */
   setActiveAccount: (provider: Provider, id: string, sessionId?: string) => Promise<void>;
   cancelSignIn: () => Promise<void>;
+  finishGeminiSignIn: () => Promise<void>;
   openUrl: (url: string) => Promise<void>;
   focusComposer: () => void;
   clearError: () => void;
@@ -3214,8 +3216,17 @@ export const useStore = create<State>((set, get) => ({
    * desktop, and a URL surfaced for the user to click.
    */
   async startSignIn(provider, account) {
+    const previous = get().signIn;
+    if (previous?.state === "starting" || previous?.state === "running") return;
+    if (provider === "gemini") account ??= "default";
     set({ signIn: { runId: null, provider, ...(account ? { account } : {}), lines: [], urls: [], state: "starting" }, error: null });
     try {
+      if (provider === "gemini") {
+        const terminal = await api.providerLoginTerminal(account!);
+        const run = get().signIn;
+        if (run?.provider === provider && run.account === account) set({ signIn: { ...run, runId: terminal.id, terminal, state: "running" } });
+        return;
+      }
       const { runId } = await api.providerLoginStart(provider, (event: LoginEvent) => {
         const run = get().signIn;
         if (!run || run.provider !== provider) return;
@@ -3297,6 +3308,10 @@ export const useStore = create<State>((set, get) => ({
       set({ error: asError(error) });
       return;
     }
+    // Model catalogs and usage belong to the selected account too.
+    const { [provider]: _oldModels, ...providerModels } = get().providerModels;
+    set({ providerModels, usage: { ...get().usage, [provider]: null } });
+    void get().loadProviderModels(provider, true);
     // The usage bars and sign-in status follow the account.
     set({ accounts: { ...get().accounts, [provider]: (get().accounts[provider] ?? []).map((account) => ({ ...account, active: account.id === id })) } });
     void get().loadProviders();
@@ -3318,11 +3333,36 @@ export const useStore = create<State>((set, get) => ({
     await get().openSession(session.workspaceId, { mode: "resume", session_id: agentSessionId }, provider);
   },
 
+  async finishGeminiSignIn() {
+    const run = get().signIn;
+    if (run?.provider !== "gemini" || !run.terminal) return;
+    try {
+      const list = await api.accountsList("gemini");
+      if (get().signIn?.runId !== run.runId || get().signIn?.state !== "running") return;
+      set({ accounts: { ...get().accounts, gemini: list } });
+      if (!list.find((entry) => entry.id === run.account)?.auth?.loggedIn) {
+        set({ error: asError(t("Finish signing in inside the terminal first.")) });
+        return;
+      }
+      await api.terminalClose(run.terminal.id);
+      const { terminal: _terminal, ...finished } = run;
+      set({ signIn: { ...finished, state: "success" }, error: null });
+      await get().loadProviders();
+      void get().refreshUsage("gemini");
+    } catch (error) { set({ error: asError(error) }); }
+  },
+
   async cancelSignIn() {
     const run = get().signIn;
     if (!run?.runId) return;
     try {
-      await api.providerLoginCancel(run.runId);
+      if (run.provider === "gemini" && run.terminal) {
+        await api.terminalClose(run.terminal.id);
+        const { terminal: _terminal, ...cancelled } = run;
+        set({ signIn: { ...cancelled, state: "cancelled" } });
+      } else {
+        await api.providerLoginCancel(run.runId);
+      }
     } catch (error) {
       set({ error: asError(error) });
     }

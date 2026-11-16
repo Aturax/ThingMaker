@@ -183,6 +183,7 @@ pub(crate) fn build_launch(
         }
         Provider::Gemini => {
             let mut options = GeminiLaunchOptions::new(root, resolved.program.clone());
+            options.account_home = state.account_folder(Provider::Gemini, None);
             options.reserved = reserved;
             options.model = model;
             options.effort = effort;

@@ -45,6 +45,10 @@ pub const SETUP_HINT: &str = "Antigravity CLI is waiting for its first-run setup
 /// a cursor query. A missing sign-in, older CLI, or unexpected prompt simply
 /// yields no reading; agy's first-run setup yields `SETUP_HINT` at once.
 pub fn read_quota(program: &Path, timeout: Duration) -> Result<QuotaSnapshot, String> {
+    read_quota_for_account(program, None, timeout)
+}
+
+pub fn read_quota_for_account(program: &Path, folder: Option<&Path>, timeout: Duration) -> Result<QuotaSnapshot, String> {
     let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
     // agy asks whether to trust the folder it starts in. It starts in an empty
     // folder of its own, trusted for this run only (`--settings` is never
@@ -78,7 +82,7 @@ pub fn read_quota(program: &Path, timeout: Duration) -> Result<QuotaSnapshot, St
     cmd.args(["--settings", &settings.to_string()]);
     cmd.cwd(&workspace);
     cmd.env_clear();
-    for (key, value) in super::launch::environment().resolve(std::env::vars()) {
+    for (key, value) in super::launch::environment_for_account(folder).resolve(std::env::vars()) {
         cmd.env(key, value);
     }
     cmd.env("TERM", "xterm-256color");

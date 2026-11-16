@@ -54,7 +54,7 @@ with your own sign-in, and never reads, stores or passes on a token.
 | 📊 **Live usage** | Five-hour and weekly windows for Claude and Codex in the sidebar, read from each provider's own program at no cost. |
 | ⚖️ **Ultra-Review** | A panel of models from different providers reviews one pull request (or your branch) on its own, then cross-examines each other's findings with evidence: confirm, refine or challenge, then rebut. A Chair writes the verdict, splits go to you, and the result posts to the PR. Reviewers know each other only by letter. See [Ultra-Review](docs/ultra-review.md). |
 | 🔒 **Local Models** | Models in Ollama on this computer, free and private. **Chat** talks to the model directly, in seconds. **Agent** runs Claude Code's agent on the local model, sandboxed so it reaches only this computer. Download models from the Local Models card; a local lead hires only local helpers. See [docs/local-models.md](docs/local-models.md). |
-| 👥 **Accounts** | Sign in to more than one Claude Code or Codex account and switch between them without signing out, from Providers or the model menu. Every account shares your settings, MCP servers, skills and history; only the sign-in differs. Switching in the model menu moves the current conversation to the other account. |
+| 👥 **Accounts** | Sign in to more than one Claude Code, Codex or Gemini account and switch between them without signing out, from Providers or the model menu. Every account shares your settings, MCP servers, skills and history; only the sign-in differs. Switching in the model menu moves the current conversation to the other account. |
 | 🧭 **Big Thing** | A long-horizon goal runner: drop in a plan document and the agent turns it into milestones and tasks with their dependencies and checks; press Start and it runs to the end on its own — see [Big Thing](#big-thing) below. |
 | 🧠 **Shared memory** | One project memory — decisions, conventions, facts — that the orchestrator, its workers and you read and write (`memory_read`, `memory_write`), plus a live task board. |
 | 🖼️ **Inline images** | Images agents generate or read show up right in the transcript, including Codex's generated images. |
@@ -159,7 +159,13 @@ which worker did each task, and the project memory.
 - **Codex:** install the [ChatGPT app](https://openai.com/chatgpt/download/)
   (its `codex` is found automatically) or the `codex` CLI, and sign in.
 - **Gemini:** install Google's Antigravity and sign in to its `agy` CLI; the
-  quota is your Google account's, shared with the Antigravity app.
+  quota is your Google account's, shared with the Antigravity app. To add
+  another Google account, choose **Add account** in ThingMaker's Providers
+  panel. Complete Antigravity's setup in the embedded terminal, open its
+  sign-in URL in your browser, paste the returned code, then choose **Done
+  signing in**. Added accounts keep private sign-ins; the main account
+  continues to use the Antigravity app's sign-in. CLI settings, MCP servers,
+  skills and conversation history are shared.
 
 ### 2. Install ThingMaker
 

@@ -1,5 +1,5 @@
 /**
- * A provider's accounts in the Providers panel (Claude Code, Codex): which
+ * A provider's accounts in the Providers panel (Claude Code, Codex, Gemini): which
  * one is active, who each is signed in as, and adding, renaming, removing
  * and signing in to them. Every account shares settings, MCP servers,
  * skills and history; only the sign-in differs.
@@ -24,6 +24,7 @@ export function ProviderAccounts({ provider }: { provider: Provider }) {
   const setActiveAccount = useStore((s) => s.setActiveAccount);
   const startSignIn = useStore((s) => s.startSignIn);
   const signIn = useStore((s) => s.signIn);
+  const signingIn = signIn?.state === "starting" || signIn?.state === "running";
   const [adding, setAdding] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; label: string } | null>(null);
 
@@ -49,7 +50,7 @@ export function ProviderAccounts({ provider }: { provider: Provider }) {
       {list.length > 1 &&
         list.map((account) => {
           const signedIn = account.auth?.loggedIn === true;
-          const busy = signIn?.provider === provider && signIn.account === account.id && (signIn.state === "starting" || signIn.state === "running");
+          const busy = signIn?.provider === provider && (signIn.account ?? "default") === account.id && (signIn.state === "starting" || signIn.state === "running");
           return (
             <div className={`provider-account ${account.active ? "on" : ""}`} key={account.id}>
               <label className="provider-account-pick">
@@ -80,7 +81,7 @@ export function ProviderAccounts({ provider }: { provider: Provider }) {
                 )}
               </label>
               {!signedIn && (
-                <button className="button button-small" disabled={busy} onClick={() => void startSignIn(provider, account.isDefault ? undefined : account.id)} type="button">
+                <button className="button button-small" disabled={signingIn} onClick={() => void startSignIn(provider, account.isDefault ? undefined : account.id)} type="button">
                   {busy ? t("Signing in…") : t("Sign in")}
                 </button>
               )}
@@ -89,7 +90,7 @@ export function ProviderAccounts({ provider }: { provider: Provider }) {
                   <button className="button button-small" onClick={() => setRenaming({ id: account.id, label: account.label })} type="button">
                     {t("Rename")}
                   </button>
-                  <button className="button button-small" onClick={() => void remove(account)} type="button">
+                  <button className="button button-small" disabled={busy} onClick={() => void remove(account)} type="button">
                     {t("Remove")}
                   </button>
                 </>
@@ -98,7 +99,7 @@ export function ProviderAccounts({ provider }: { provider: Provider }) {
           );
         })}
       {adding === null ? (
-        <button className="button button-small provider-account-add" onClick={() => setAdding("")} type="button">
+        <button className="button button-small provider-account-add" disabled={signingIn} onClick={() => setAdding("")} type="button">
           {t("+ Add account")}
         </button>
       ) : (
@@ -112,7 +113,7 @@ export function ProviderAccounts({ provider }: { provider: Provider }) {
           }}
         >
           <input aria-label={t("Account name")} autoFocus className="input" onChange={(event) => setAdding(event.target.value)} onKeyDown={(event) => event.key === "Escape" && setAdding(null)} placeholder={t("A name, like Work or Personal")} value={adding} />
-          <button className="button button-primary button-small" disabled={!adding.trim()} type="submit">
+          <button className="button button-primary button-small" disabled={!adding.trim() || signingIn} type="submit">
             {t("Add and sign in")}
           </button>
           <button className="button button-small" onClick={() => setAdding(null)} type="button">

@@ -67,7 +67,11 @@ pub const SIGN_IN_HINT: &str = "Sign in through the Antigravity app, or run `agy
 
 /// `agy models`, with a bound, in the documented environment.
 pub fn read_models(program: &Path, timeout: Duration) -> Result<Vec<ProviderModel>, String> {
-    let env = super::launch::environment().resolve(std::env::vars());
+    read_models_for_account(program, None, timeout)
+}
+
+pub fn read_models_for_account(program: &Path, folder: Option<&Path>, timeout: Duration) -> Result<Vec<ProviderModel>, String> {
+    let env = super::launch::environment_for_account(folder).resolve(std::env::vars());
     read_models_with(program, &env, timeout)
 }
 
@@ -133,7 +137,11 @@ pub fn models_from_list(text: &str) -> Vec<ProviderModel> {
 
 /// Signed in when `agy models` answers; otherwise the reason.
 pub fn read_status(program: &Path, timeout: Duration) -> ProviderAuthStatus {
-    match read_models(program, timeout) {
+    read_status_for_account(program, None, timeout)
+}
+
+pub fn read_status_for_account(program: &Path, folder: Option<&Path>, timeout: Duration) -> ProviderAuthStatus {
+    match read_models_for_account(program, folder, timeout) {
         Ok(_) => ProviderAuthStatus { provider: Provider::Gemini, logged_in: Some(true), method: Some("google".into()), account: None, plan: None, problem: None },
         Err(error) => ProviderAuthStatus { provider: Provider::Gemini, logged_in: Some(false), method: None, account: None, plan: None, problem: Some(error) },
     }
@@ -142,6 +150,21 @@ pub fn read_status(program: &Path, timeout: Duration) -> ProviderAuthStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a signed-in local agy installation; sends no model prompt"]
+    fn a_new_account_cannot_use_the_main_accounts_credentials() {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from).unwrap();
+        let program = super::super::launch::find_program(&home).expect("installed agy");
+        assert_eq!(read_status(&program, Duration::from_secs(15)).logged_in, Some(true), "the default account must be signed in for this check");
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("account");
+        crate::agents::accounts::share(Provider::Gemini, &home.join(".gemini"), &folder, &home).unwrap();
+        let extra = read_status_for_account(&program, Some(&folder), Duration::from_secs(15));
+        assert_eq!(extra.logged_in, Some(false), "a new account must not reuse the main keyring or credential files");
+        assert!(extra.problem.unwrap_or_default().contains("sign in"));
+        assert_eq!(read_status(&program, Duration::from_secs(15)).logged_in, Some(true), "the default account must remain signed in");
+    }
 
     #[test]
     fn the_catalog_reads_as_agy_prints_it() {

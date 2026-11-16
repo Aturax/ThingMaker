@@ -10392,3 +10392,6 @@ html[data-platform="android"] { --traffic-lights: 8px; --titlebar: 52px; height:
 .main-pane .session-panel {
   max-width: none;
 }
+
+/* The provider sign-in TUI needs space inside the compact auth drawer. */
+.provider-login-terminal .terminal-host { flex: 0 0 auto; height: 420px; min-height: 300px; }

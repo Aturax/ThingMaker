@@ -1,14 +1,16 @@
 //! More than one account per provider, switched without signing out.
 //!
 //! Claude Code keeps its sign-in per settings folder (`CLAUDE_CONFIG_DIR`),
-//! and Codex under `CODEX_HOME`. So each extra account is a folder of its
+//! and Codex under `CODEX_HOME`. Gemini uses a separate home and file-based
+//! CLI authentication (see `gemini::launch::account_environment`).
+//! Each extra account is a folder of its
 //! own inside ThingMaker's data folder, where only the sign-in is the
 //! account's: everything else (settings, MCP servers, skills, plugins,
 //! memory, conversation history) is a link back to the person's main folder,
 //! so switching accounts changes who is signed in and nothing else, as
 //! signing out and in again did.
 //!
-//! The person's own folders (`~/.claude`, `~/.codex`) are the default
+//! The person's own folders (`~/.claude`, `~/.codex`, `~/.gemini`) are the default
 //! account and are never changed here.
 
 use std::path::{Path, PathBuf};
@@ -37,7 +39,7 @@ pub struct Account {
 
 /// Whether a provider can have more than one account here.
 pub fn supports_accounts(provider: Provider) -> bool {
-    matches!(provider, Provider::Claude | Provider::Codex)
+    matches!(provider, Provider::Claude | Provider::Codex | Provider::Gemini)
 }
 
 /// The variable that points a provider's program at an account's folder.
@@ -51,6 +53,9 @@ pub fn folder_variable(provider: Provider) -> Option<&'static str> {
 
 /// The person's own folder for a provider: where the default account lives.
 pub fn main_folder(provider: Provider, home: &Path) -> Option<PathBuf> {
+    if provider == Provider::Gemini {
+        return Some(home.join(".gemini"));
+    }
     let variable = folder_variable(provider)?;
     let fallback = match provider {
         Provider::Claude => home.join(".claude"),
@@ -89,6 +94,9 @@ const CLAUDE_IDENTITY_KEYS: &[&str] = &["oauthAccount", "userID", "primaryApiKey
 /// since is shared too. Only ever creates links and the account's own files
 /// in `folder`; `main` is read, never changed.
 pub fn share(provider: Provider, main: &Path, folder: &Path, home: &Path) -> std::io::Result<()> {
+    if provider == Provider::Gemini {
+        return share_gemini(main, folder, home);
+    }
     std::fs::create_dir_all(folder)?;
     if main.is_dir() {
         for entry in std::fs::read_dir(main)? {
@@ -118,6 +126,40 @@ pub fn share(provider: Provider, main: &Path, folder: &Path, home: &Path) -> std
         std::fs::write(&temp, text)?;
         std::fs::rename(&temp, &own_path)?;
     }
+    Ok(())
+}
+
+/// Antigravity has no config-folder override for authentication. Each extra
+/// account gets a home containing its own .gemini credential files. Other
+/// home entries remain available, and the CLI's settings/history are shared.
+/// Only the provider writes credentials; none are copied from the main account.
+fn share_gemini(main: &Path, folder: &Path, home: &Path) -> std::io::Result<()> {
+    let gemini = folder.join(".gemini");
+    std::fs::create_dir_all(&gemini)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(&gemini, std::fs::Permissions::from_mode(0o700))?;
+    }
+    for entry in std::fs::read_dir(home)? {
+        let entry = entry?;
+        if entry.file_name() == ".gemini" { continue; }
+        let target = folder.join(entry.file_name());
+        if target.symlink_metadata().is_err() { link(&entry.path(), &target)?; }
+    }
+    // Explicitly share known non-credential content. Token files and keyring
+    // timeout markers stay private, including names introduced by future agy builds.
+    for name in ["antigravity-cli", "GEMINI.md", "settings.json", "skills", "commands"] {
+        let source = main.join(name);
+        let target = gemini.join(name);
+        if source.exists() && target.symlink_metadata().is_err() { link(&source, &target)?; }
+    }
+    let config = gemini.join("config");
+    std::fs::create_dir_all(&config)?;
+    let mcp = main.join("config/mcp_config.json");
+    let target = config.join("mcp_config.json");
+    if mcp.is_file() && target.symlink_metadata().is_err() { link(&mcp, &target)?; }
     Ok(())
 }
 
@@ -207,14 +249,44 @@ mod tests {
     }
 
     #[test]
+    fn gemini_homes_share_settings_and_history_but_never_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let main = home.join(".gemini");
+        std::fs::create_dir_all(main.join("antigravity-cli/conversations")).unwrap();
+        std::fs::create_dir_all(main.join("config")).unwrap();
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::write(main.join("config/mcp_config.json"), "{}").unwrap();
+        std::fs::write(main.join("antigravity-oauth-token"), "main-secret").unwrap();
+        std::fs::write(main.join("future-credential-file"), "main-secret").unwrap();
+        let work = dir.path().join("accounts/gemini/work");
+        let personal = dir.path().join("accounts/gemini/personal");
+        for folder in [&work, &personal] {
+            share(Provider::Gemini, &main, folder, &home).unwrap();
+            assert!(folder.join(".gemini/antigravity-cli/conversations").is_dir());
+            assert!(folder.join(".gemini/config/mcp_config.json").symlink_metadata().unwrap().file_type().is_symlink());
+            assert!(folder.join(".ssh").is_dir());
+            assert!(!folder.join(".gemini/antigravity-oauth-token").exists());
+            assert!(!folder.join(".gemini/future-credential-file").exists());
+        }
+        std::fs::write(work.join(".gemini/antigravity-oauth-token"), "work-secret").unwrap();
+        share(Provider::Gemini, &main, &work, &home).unwrap();
+        assert_eq!(std::fs::read_to_string(work.join(".gemini/antigravity-oauth-token")).unwrap(), "work-secret");
+        assert_eq!(std::fs::read_to_string(main.join("antigravity-oauth-token")).unwrap(), "main-secret");
+        std::fs::remove_dir_all(work).unwrap();
+        assert!(main.join("antigravity-cli/conversations").is_dir());
+        assert!(!personal.join(".gemini/antigravity-oauth-token").exists());
+    }
+
+    #[test]
     fn stored_accounts_are_read_safely() {
         let value = json!([
             { "id": "work-1", "provider": "claude", "label": "Work" },
             { "id": "../evil", "provider": "codex", "label": "x" },
-            { "id": "g", "provider": "gemini", "label": "no" },
+            { "id": "g", "provider": "gemini", "label": "Personal" },
             { "id": "default", "provider": "claude", "label": "dup" }
         ]);
         let accounts = read_accounts(Some(value));
-        assert_eq!(accounts.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["work-1"]);
+        assert_eq!(accounts.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["work-1", "g"]);
     }
 }

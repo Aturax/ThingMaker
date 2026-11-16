@@ -413,6 +413,7 @@ export const api = {
   providersStatus: () => call<ProviderInfo[]>(COMMANDS.providersStatus),
   providerSetLocation: (provider: Provider, location: ProviderLocation | null) =>
     call<void>(COMMANDS.providerSetLocation, { request: { provider, location } }),
+  providerLoginTerminal: (account: string) => call<TerminalInfo>(COMMANDS.providerLoginTerminal, { account }),
   providerLoginStart: (provider: Provider, onEvent: (event: LoginEvent) => void, account?: string) => {
     const channel = new Channel<LoginEvent>();
     channel.onmessage = onEvent;
