@@ -276,7 +276,10 @@ pub(crate) fn is_junction(path: &Path) -> std::io::Result<bool> {
 fn remove_profile_link(path: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
-        if is_junction(path)? { return junction::delete(path); }
+        if is_junction(path)? {
+            junction::delete(path)?;
+            return std::fs::remove_dir(path);
+        }
         if path.is_dir() { return std::fs::remove_dir(path); }
     }
     std::fs::remove_file(path)
