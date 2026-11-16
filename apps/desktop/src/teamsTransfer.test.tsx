@@ -14,6 +14,7 @@ import { api } from "./ipc";
 import { useStore } from "./store";
 import { TeamsTransfer } from "./components/TeamsTransfer";
 import { exportTeams } from "./teamFile";
+import { DEFAULT_TEAMS } from "./defaultTeams";
 
 const preset = (name: string): TeamPreset => ({ id: name, name, orchestrator: { provider: "claude" }, combo: { workers: [], nativeSubagents: false }, updatedAt: 1 });
 
@@ -73,5 +74,24 @@ describe("exporting and importing teams", () => {
     expect(await screen.findByText(/Imported 1 team and 1 helper\./)).toBeTruthy();
     expect(useStore.getState().helperPresets.map((entry) => entry.worker.prompt)).toEqual(["Flat pastel style"]);
     expect(api.prefSet).toHaveBeenCalledWith("helperPresets", expect.any(Array));
+  });
+  it("loads the default teams once, skipping names already here", async () => {
+    useStore.setState({ teamPresets: [preset("Art crew"), preset("big brain")] } as never);
+    const onImported = vi.fn();
+    render(<TeamsTransfer onImported={onImported} />);
+    fireEvent.click(screen.getByRole("button", { name: "Load defaults" }));
+    expect(await screen.findByText(`Added ${DEFAULT_TEAMS.length - 1} default teams.`)).toBeTruthy();
+    const names = useStore.getState().teamPresets.map((entry) => entry.name);
+    expect(names).toHaveLength(DEFAULT_TEAMS.length + 1);
+    expect(names).not.toContain("Big Brain");
+    expect(names).toEqual(expect.arrayContaining(["Full Codex", "PR Reviewer", "Local"]));
+    const reviewer = useStore.getState().teamPresets.find((entry) => entry.name === "PR Reviewer");
+    expect(reviewer?.orchestrator).toEqual({ provider: "claude", model: "fable", effort: "xhigh" });
+    expect(reviewer?.combo.workers.map((worker) => worker.name)).toEqual(["correctness", "tests", "devils-advocate"]);
+    expect(onImported).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load defaults" }));
+    expect(await screen.findByText("The default teams are already here.")).toBeTruthy();
+    expect(useStore.getState().teamPresets).toHaveLength(DEFAULT_TEAMS.length + 1);
   });
 });

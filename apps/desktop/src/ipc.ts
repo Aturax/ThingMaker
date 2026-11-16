@@ -433,6 +433,7 @@ export const api = {
   localSetWindow: (name: string, tokens: number) => call<void>(COMMANDS.localSetWindow, { name, tokens }),
   providerVersions: (askLatest: boolean) => call<ProviderVersion[]>(COMMANDS.providerVersions, { askLatest }),
   providerUpdate: (provider: Provider) => call<ProviderUpdateResult>(COMMANDS.providerUpdate, { provider }),
+  providerInstall: (provider: Provider) => call<string>(COMMANDS.providerInstall, { provider }),
   appUpdateCheck: () => call<UpdateCheck>(COMMANDS.appUpdateCheck),
   /** Resolves only if installing fails: on success the app restarts into the new version. */
   appUpdateInstall: (onProgress: (progress: UpdateProgress) => void) => {

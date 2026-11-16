@@ -1769,6 +1769,7 @@ export const COMMANDS = {
   keepAwakeStatus: "keep_awake_status",
   providerVersions: "provider_versions",
   providerUpdate: "provider_update",
+  providerInstall: "provider_install",
   appUpdateCheck: "app_update_check",
   appUpdateInstall: "app_update_install",
   keepAwakeRefresh: "keep_awake_refresh",

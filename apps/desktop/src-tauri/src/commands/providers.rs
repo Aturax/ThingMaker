@@ -146,6 +146,24 @@ pub async fn provider_update(provider: Provider, state: State<'_, AppState>) -> 
     .map_err(|error| DesktopError::io(error.to_string()))?
 }
 
+/// Installs a provider's program with npm, for the first-run guide's Install
+/// button (Claude's adapter and Codex; the others are downloads the person
+/// runs). Returns the tail of what npm printed; the guide asks for the
+/// providers' state again afterwards.
+#[tauri::command]
+pub async fn provider_install(provider: Provider, state: State<'_, AppState>) -> CommandResult<String> {
+    let home = state.home.clone().ok_or_else(|| DesktopError::not_ready("No home folder to install into."))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        tracing::info!(provider = provider.as_str(), "installing the provider program");
+        versions::install(provider, &home).map_err(|error| {
+            tracing::warn!(provider = provider.as_str(), %error, "provider install failed");
+            DesktopError::io(error)
+        })
+    })
+    .await
+    .map_err(|error| DesktopError::io(error.to_string()))?
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderLocationRequest {

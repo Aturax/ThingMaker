@@ -164,7 +164,12 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
  * or a team, are chips as in a session; what is written goes out as soon as
  * the agent is ready.
  */
-function StartBox({ workspaceId, name, trusted }: { workspaceId: string; name: string; trusted: boolean }) {
+/**
+ * The project's composer: a prompt, a provider and model or a team, and send.
+ * The first-run guide uses it too, starting on the team it picked and told
+ * when a session starts.
+ */
+export function StartBox({ workspaceId, name, trusted, initialPreset, onStarted }: { workspaceId: string; name: string; trusted: boolean; initialPreset?: TeamPreset | null; onStarted?: () => void }) {
   const providers = useStore((s) => s.providers);
   const presets = useStore((s) => s.teamPresets);
   const defaults = useStore((s) => s.sessionDefaults);
@@ -175,7 +180,7 @@ function StartBox({ workspaceId, name, trusted }: { workspaceId: string; name: s
   const [text, setText] = useState("");
   const [provider, setProvider] = useState<Provider | null>(null);
   const [model, setModel] = useState<string | null>(null);
-  const [preset, setPreset] = useState<TeamPreset | null>(null);
+  const [preset, setPreset] = useState<TeamPreset | null>(initialPreset ?? null);
   const input = useRef<HTMLTextAreaElement>(null);
   const chosen = provider ?? startingProvider(providers);
   const ready = (candidate: Provider) => !!providers?.find((entry) => entry.provider === candidate)?.resolved;
@@ -190,6 +195,7 @@ function StartBox({ workspaceId, name, trusted }: { workspaceId: string; name: s
     if (preset) void openSessionWithPreset(workspaceId, preset, message);
     else void openSession(workspaceId, { mode: "new" }, chosen, { ...(model ? { model } : {}), ...(message ? { message } : {}) });
     setText("");
+    onStarted?.();
   };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== "Enter" || event.nativeEvent.isComposing) return;

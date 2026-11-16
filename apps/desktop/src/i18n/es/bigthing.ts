@@ -631,4 +631,9 @@ export const bigthing: Record<string, string> = {
   "Export {what}": "Exportar {what}",
   "No teams or helpers to export yet.": "Todavía no hay equipos ni ayudantes que exportar.",
   "Save teams and helpers to a JSON file": "Guarda equipos y ayudantes en un archivo JSON",
+  "Load defaults": "Cargar predeterminados",
+  "Add a set of premade teams. Ones you already have are skipped.": "Añade un conjunto de equipos ya hechos. Se omiten los que ya tienes.",
+  "The default teams are already here.": "Los equipos predeterminados ya están aquí.",
+  "Added “{name}”.": "Añadido «{name}».",
+  "Added {count} default teams.": "Añadidos {count} equipos predeterminados.",
 };

@@ -66,6 +66,7 @@ export function TopBar() {
   } else if (view.kind === "signin") title = t("Sign-in");
   else if (view.kind === "settings") title = t("Settings");
   else if (view.kind === "teams") title = t("Teams");
+  else if (view.kind === "setup") title = t("Setup guide");
 
   return (
     <header className={`topbar ${sidebarCollapsed && !IS_REMOTE ? "topbar-inset" : ""}`} data-tauri-drag-region>

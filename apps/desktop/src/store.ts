@@ -65,6 +65,7 @@ import { api } from "./ipc";
 import { notify, shouldNotify } from "./notifications";
 import { CLAUDE_RETRY_MS, claudeUsageFrom } from "./odysseyClaudeQuota";
 import { applyEvent, emptyProjection, EMPTY_QUEUE, type Card, type Projection } from "./projection";
+import { readSetup, writeSetup } from "./setupProgress";
 import { IS_REMOTE } from "./remote/mode";
 import { idleSweep, loadTouches, saveTouches, touch } from "./idleSessions";
 import { navEntry, navTarget, recordVisit, type NavEntry } from "./navHistory";
@@ -132,6 +133,8 @@ export type LiveSession = {
 
 export type View =
   | { kind: "welcome" }
+  /** The first-run guide, reopened from the command palette. */
+  | { kind: "setup" }
   | { kind: "workspace"; workspaceId: string }
   | { kind: "session"; sessionId: string }
   /** A new session whose agent is still starting (see StartingPanel). */
@@ -364,8 +367,9 @@ type State = {
   setView: (view: View) => void;
   /** Step back or forward through `navHistory` (⌘[ and ⌘]). */
   navigate: (direction: -1 | 1) => void;
-  addWorkspaceByPicker: () => Promise<void>;
-  addWorkspaceByPath: (path: string) => Promise<void>;
+  /** Adds a folder the person picks, and opens it unless `stay` (the first-run guide keeps its place). Returns the workspace's id, or null when none was added. */
+  addWorkspaceByPicker: (options?: { stay?: boolean }) => Promise<string | null>;
+  addWorkspaceByPath: (path: string, options?: { stay?: boolean }) => Promise<string | null>;
   selectWorkspace: (workspaceId: string) => Promise<void>;
   inspectWorkspace: (workspaceId: string) => Promise<WorkspaceInspection | null>;
   trust: (workspaceId: string, state: TrustState) => Promise<void>;
@@ -1104,8 +1108,12 @@ export const useStore = create<State>((set, get) => ({
       if (place && workspaces.some((w) => w.id === place.workspaceId)) {
         await returnTo(get, set, place, rehydrated);
       } else {
+        // Someone part-way through the first-run guide comes back to it;
+        // anyone who had projects before the guide existed never sees it.
+        const setup = IS_REMOTE ? null : readSetup();
+        if (!IS_REMOTE && !setup && workspaces.length > 0) writeSetup({ finished: true });
         const first = workspaces[0];
-        if (first) {
+        if (first && !(setup && !setup.finished)) {
           await get().selectWorkspace(first.id);
         }
       }
@@ -1188,17 +1196,18 @@ export const useStore = create<State>((set, get) => ({
     if (view.kind === "settings") void get().loadSettings();
   },
 
-  async addWorkspaceByPicker() {
+  async addWorkspaceByPicker(options) {
     try {
       const path = await api.workspacePick();
-      if (path) await get().addWorkspaceByPath(path);
+      return path ? await get().addWorkspaceByPath(path, options) : null;
     } catch (error) {
       set({ error: asError(error) });
+      return null;
     }
   },
 
-  async addWorkspaceByPath(path) {
-    if (!path.trim()) return;
+  async addWorkspaceByPath(path, options) {
+    if (!path.trim()) return null;
     set({ busy: t("Inspecting workspace"), error: null });
     try {
       const inspection = await api.workspaceInspect(path.trim());
@@ -1206,10 +1215,12 @@ export const useStore = create<State>((set, get) => ({
       set({
         workspaces,
         inspections: { ...get().inspections, [inspection.record.id]: inspection },
-        view: { kind: "workspace", workspaceId: inspection.record.id },
+        ...(options?.stay ? {} : { view: { kind: "workspace", workspaceId: inspection.record.id } as View }),
       });
+      return inspection.record.id;
     } catch (error) {
       set({ error: asError(error) });
+      return null;
     } finally {
       set({ busy: null });
     }

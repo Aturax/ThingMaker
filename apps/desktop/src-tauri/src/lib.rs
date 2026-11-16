@@ -220,6 +220,7 @@ pub fn run() {
             keep_awake::keep_awake_status,
             commands::providers::provider_versions,
             commands::providers::provider_update,
+            commands::providers::provider_install,
             commands::update::app_update_check,
             commands::update::app_update_install,
             keep_awake::keep_awake_refresh,

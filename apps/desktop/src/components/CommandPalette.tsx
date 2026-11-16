@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SESSION_TABS, basenameOf, sessionTitle, useStore, type SessionTab } from "../store";
 import { t } from "../i18n";
+import { IS_REMOTE } from "../remote/mode";
 
 /** A session tab by the name its button shows. */
 function tabName(tab: SessionTab): string {
@@ -54,6 +55,7 @@ export function CommandPalette() {
       { id: "view.teams", label: t("Teams (an orchestrator and its workers)"), run: () => state.setView({ kind: "teams" }) },
       { id: "view.integrations", label: t("Integrations: instructions, skills, MCP servers and secrets"), hint: "⌘I", run: () => state.setView({ kind: "settings", tab: "integrations" }) },
       { id: "view.welcome", label: t("Welcome"), run: () => state.setView({ kind: "welcome" }) },
+      ...(IS_REMOTE ? [] : [{ id: "view.setup", label: t("Setup guide"), run: () => state.setView({ kind: "setup" }) }]),
     ];
     for (const workspace of state.workspaces) {
       list.push({ id: `ws.${workspace.id}`, label: t("Open workspace {name}", { name: basenameOf(workspace.displayPath) }), hint: workspace.displayPath, run: () => void state.selectWorkspace(workspace.id) });

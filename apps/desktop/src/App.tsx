@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { IS_REMOTE } from "./remote/mode";
 import { ConnectionBanner } from "./remote/ConnectionBanner";
 import { useStore } from "./store";
@@ -18,9 +18,17 @@ import { TeamsView } from "./components/TeamsView";
 import { CommandPalette } from "./components/CommandPalette";
 import { IconFolder, IconKey } from "./components/icons";
 import { t } from "./i18n";
+import { SetupGuide } from "./components/SetupGuide";
+import { MOD_KEY, readSetup } from "./setupProgress";
 
 
 function Welcome() {
+  const [finished, setFinished] = useState(() => IS_REMOTE || readSetup()?.finished === true);
+  if (!finished) return <SetupGuide onFinish={() => setFinished(true)} />;
+  return <WelcomeCard />;
+}
+
+function WelcomeCard() {
   const addWorkspaceByPicker = useStore((s) => s.addWorkspaceByPicker);
   const setView = useStore((s) => s.setView);
   const loadProviders = useStore((s) => s.loadProviders);
@@ -50,13 +58,13 @@ function Welcome() {
           </button>
         </div>
         <dl className="welcome-keys">
-          <dt>⌘K</dt>
+          <dt>{MOD_KEY}K</dt>
           <dd>{t("command palette")}</dd>
-          <dt>⌘N</dt>
+          <dt>{MOD_KEY}N</dt>
           <dd>{t("new session in the selected workspace")}</dd>
-          <dt>⌘1–9</dt>
+          <dt>{MOD_KEY}1–9</dt>
           <dd>{t("switch sessions")}</dd>
-          <dt>⌘B</dt>
+          <dt>{MOD_KEY}B</dt>
           <dd>{t("toggle sidebar")}</dd>
         </dl>
         <p className="small muted">
@@ -94,6 +102,7 @@ export function App() {
   const announcement = useStore((s) => s.announcement);
   const reducedMotion = useStore((s) => s.uiPrefs.reducedMotion);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
+  const setView = useStore((s) => s.setView);
 
   useEffect(() => {
     void bootstrap();
@@ -162,6 +171,7 @@ export function App() {
           <div className="main-pane">
             <ErrorBoundary key={view.kind === "session" ? view.sessionId : view.kind} label={t("{view} view", { view: view.kind })}>
               {view.kind === "welcome" && <Welcome />}
+              {view.kind === "setup" && <SetupGuide onFinish={() => setView({ kind: "welcome" })} />}
               {view.kind === "workspace" && <WorkspaceView key={view.workspaceId} workspaceId={view.workspaceId} />}
               {view.kind === "session" && (
                 <div className="session-split">

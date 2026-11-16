@@ -277,7 +277,7 @@ fn node_beside(script: &Path) -> Option<PathBuf> {
 
 /// npm global prefixes, most likely first: nvm versions newest first, then
 /// Homebrew and /usr/local.
-fn npm_prefixes(home: &Path) -> Vec<PathBuf> {
+pub(crate) fn npm_prefixes(home: &Path) -> Vec<PathBuf> {
     let mut nvm: Vec<(Vec<u64>, PathBuf)> = std::fs::read_dir(home.join(".nvm/versions/node"))
         .into_iter()
         .flatten()
@@ -305,7 +305,7 @@ fn npm_prefixes(home: &Path) -> Vec<PathBuf> {
     prefixes
 }
 
-fn find_node() -> Option<PathBuf> {
+pub(crate) fn find_node() -> Option<PathBuf> {
     let name = if cfg!(windows) { "node.exe" } else { "node" };
     std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|dir| dir.join(name)).find(|path| path.is_file())

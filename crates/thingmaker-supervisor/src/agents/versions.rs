@@ -358,9 +358,94 @@ pub fn update(provider: Provider, program: &Path, prefix_args: &[String]) -> Res
     if ok { Ok(output) } else { Err(if output.is_empty() { "the update failed without saying why".into() } else { output }) }
 }
 
+/// The npm package a provider's program installs from, for the providers
+/// ThingMaker can install itself. Gemini comes with the Antigravity app and
+/// Local Models with Ollama; both are downloads the person runs.
+pub fn install_package(provider: Provider) -> Option<&'static str> {
+    match provider {
+        Provider::Claude => Some(super::claude::launch::ADAPTER_PACKAGE),
+        Provider::Codex => Some("@openai/codex"),
+        Provider::Gemini | Provider::Local => None,
+    }
+}
+
+/// Said when there is no Node.js to install with; the first-run guide shows a
+/// link to nodejs.org beside it.
+pub const NODE_MISSING: &str = "Node.js is needed to install this. Get it from nodejs.org, then press Install again.";
+
+/// A Node toolchain to install with: `node`, npm's own script, and the
+/// global prefix to install into (`None`: npm's default, on Windows).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toolchain {
+    pub node: PathBuf,
+    pub npm_cli: PathBuf,
+    pub prefix: Option<PathBuf>,
+}
+
+/// The Node toolchain to install with: the first one in the places the
+/// providers are looked for (nvm's newest, then Homebrew and /usr/local), so
+/// what it installs is found straight away. On Windows, the Node on `PATH`
+/// or in Program Files, installing into npm's default global folder.
+pub fn find_toolchain(home: &Path) -> Option<Toolchain> {
+    for prefix in super::claude::launch::npm_prefixes(home) {
+        let node = prefix.join("bin/node");
+        let npm_cli = prefix.join("lib/node_modules/npm/bin/npm-cli.js");
+        if node.is_file() && npm_cli.is_file() {
+            return Some(Toolchain { node, npm_cli, prefix: Some(prefix) });
+        }
+    }
+    #[cfg(windows)]
+    {
+        let node = super::claude::launch::find_node().or_else(|| Some(PathBuf::from(r"C:\Program Files\nodejs\node.exe")).filter(|path| path.is_file()))?;
+        let npm_cli = node.parent()?.join("node_modules/npm/bin/npm-cli.js");
+        if npm_cli.is_file() {
+            return Some(Toolchain { node, npm_cli, prefix: None });
+        }
+    }
+    None
+}
+
+/// Installs a provider's program with npm (`npm install -g <package>@latest`)
+/// and returns the tail of what it printed.
+pub fn install(provider: Provider, home: &Path) -> Result<String, String> {
+    let package = install_package(provider).ok_or_else(|| format!("{} is installed outside ThingMaker.", provider.label()))?;
+    let toolchain = find_toolchain(home).ok_or_else(|| NODE_MISSING.to_string())?;
+    let mut command = command(&toolchain.node, toolchain.node.parent());
+    command.arg(&toolchain.npm_cli).args(["install", "--global"]);
+    if let Some(prefix) = &toolchain.prefix {
+        command.arg("--prefix").arg(prefix);
+    }
+    command.args(["--no-fund", "--no-audit", "--loglevel=error"]).arg(format!("{package}@latest"));
+    let (ok, output) = run_capturing(command, UPDATE_TIMEOUT)?;
+    if ok { Ok(output) } else { Err(if output.is_empty() { "the install failed without saying why".into() } else { output }) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_npm_providers_install_from_here() {
+        assert_eq!(install_package(Provider::Claude), Some(super::super::claude::launch::ADAPTER_PACKAGE));
+        assert_eq!(install_package(Provider::Codex), Some("@openai/codex"));
+        assert_eq!(install_package(Provider::Gemini), None);
+        assert_eq!(install_package(Provider::Local), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_toolchain_is_one_the_providers_are_looked_for_in() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(find_toolchain(home.path()).is_none_or(|found| found.prefix.as_deref().is_some_and(|prefix| !prefix.starts_with(home.path()))));
+        let nvm = home.path().join(".nvm/versions/node/v24.1.0");
+        std::fs::create_dir_all(nvm.join("bin")).unwrap();
+        std::fs::create_dir_all(nvm.join("lib/node_modules/npm/bin")).unwrap();
+        std::fs::write(nvm.join("bin/node"), "").unwrap();
+        std::fs::write(nvm.join("lib/node_modules/npm/bin/npm-cli.js"), "").unwrap();
+        let found = find_toolchain(home.path()).unwrap();
+        assert_eq!(found.prefix.as_deref(), Some(nvm.as_path()));
+        assert_eq!(found.node, nvm.join("bin/node"));
+    }
 
     #[test]
     fn versions_compare_as_releases() {

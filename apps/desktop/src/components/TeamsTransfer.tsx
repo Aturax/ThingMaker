@@ -7,6 +7,7 @@ import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { api } from "../ipc";
 import { useStore } from "../store";
 import { exportFileName, exportTeams, importedHelpers, importedPresets, readTeamsFile } from "../teamFile";
+import { missingDefaultTeams } from "../defaultTeams";
 import { t } from "../i18n";
 
 /** "2 teams and 1 helper", for what was exported or imported. */
@@ -110,6 +111,17 @@ export function TeamsTransfer({ onImported }: { onImported: (firstId: string) =>
     }
   };
 
+  const loadDefaults = async () => {
+    const added = missingDefaultTeams(useStore.getState().teamPresets);
+    if (added.length === 0) {
+      setNote({ kind: "ok", text: t("The default teams are already here.") });
+      return;
+    }
+    if (!(await addTeamPresets(added))) return;
+    setNote({ kind: "ok", text: added.length === 1 ? t("Added “{name}”.", { name: added[0]?.name ?? "" }) : t("Added {count} default teams.", { count: added.length }) });
+    if (added[0]) onImported(added[0].id);
+  };
+
   return (
     <div className="teams-transfer" ref={root}>
       {note && (
@@ -117,6 +129,9 @@ export function TeamsTransfer({ onImported }: { onImported: (firstId: string) =>
           {note.text}
         </span>
       )}
+      <button className="button" onClick={() => void loadDefaults()} title={t("Add a set of premade teams. Ones you already have are skipped.")} type="button">
+        {t("Load defaults")}
+      </button>
       <button className="button" onClick={() => file.current?.click()} title={t("Add teams from a JSON file")} type="button">
         {t("Import…")}
       </button>
