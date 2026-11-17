@@ -50,13 +50,15 @@ Local results on 2026-11-16: 518 workspace Rust tests passed (12 opt-in tests ig
 
 The running debug application was also exercised through its actual native commands and UI: private login terminals do not appear in `terminal_list`, `terminal_export` rejects them, a renderer reload terminates their processes, premature sign-in confirmation reports the missing isolated token, cancellation terminates login, and retry starts a new authentication-only process. The main account remains connected with its original email.
 
-`.github/workflows/gemini-accounts.yml` prepares Windows validation on pull requests: TypeScript/frontend checks and builds, focused native profile/environment/terminal tests with Developer Mode disabled, plus an unsigned probe against the official Windows agy 1.5.9 executable verified by its published SHA512. Workflow syntax was checked with actionlint. **The workflow has not run yet: these local changes have not been pushed.** It does not claim to replace real second-account OAuth on Windows.
+The [Windows compatibility workflow passed](https://github.com/Monteseu/ThingMaker/actions/runs/43901436720) on code commit `bb8544b`. It runs TypeScript/frontend checks and builds, focused native profile/environment/terminal tests with Developer Mode disabled, plus an unsigned probe against the official Windows agy 1.5.9 executable verified by its published SHA512. Workflow syntax was checked with actionlint. Windows execution exposed and verified fixes for ordinary NTFS folders, removing the empty directory left after clearing a junction, and unblocking ConPTY's initial cursor handshake before closing a private terminal whose renderer has gone away.
 
 `cargo clippy --workspace --all-targets -- -D warnings` still fails on two unchanged baseline test warnings: `type_complexity` in `crates/thingmaker-supervisor/tests/local_chat.rs:22` and `cloned_ref_to_slice_refs` in `apps/desktop/src-tauri/src/commands/screen_tools.rs:606`. Both were confirmed in the PR's original HEAD; they are outside this change.
 
 Real macOS validation used two different Google accounts on agy 1.5.9. The user completed OAuth and the CLI's first-run choices. Both emails and the selected account's quota are visible. The additional account executed an actual read-only shell command with no synthetic SSH variables, then the same conversation resumed on the main account and retained its validation marker. The main account identity remained unchanged. The repeatable opt-in test is `isolated_account_switch_preserves_context_and_clean_tool_environment` in `tests/real_gemini.rs`; it takes the private profile from `THINGMAKER_REAL_GEMINI_ACCOUNT_HOME` and requires `THINGMAKER_REAL_GEMINI=1`.
 
-## Remaining acceptance and regression checklist
+Native logout/removal also passed in the running macOS app: only the added test account disappeared, its token and private provider directory were removed, a user-created file at the profile root remained, shared conversations remained, and the main account stayed connected with its original identity.
+
+## Acceptance and regression checklist
 
 On macOS, then Windows with Developer Mode disabled:
 
@@ -66,4 +68,4 @@ On macOS, then Windows with Developer Mode disabled:
 4. While signing in, check that normal terminal listing/export cannot expose that terminal. Reload the renderer and verify the login process is terminated, including a reload while preflight is pending.
 5. Have a tool create a file in the private home. Remove the account: native logout must succeed, its private token must disappear, the main account must remain signed in, and the created file must remain available.
 
-At this checkpoint, signed-in native logout/removal and the hosted Windows workflow remain pending. Windows CI needs no Google credentials; a real second-account OAuth flow on Windows is not claimed by the unsigned CLI probe.
+The macOS checklist above has been exercised. Windows CI passed without Google credentials; a real second-account OAuth flow on Windows is not claimed by the unsigned CLI probe.
