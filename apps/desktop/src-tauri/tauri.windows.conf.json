@@ -1,4 +1,8 @@
 {
+  "build": {
+    "beforeBuildCommand": "pnpm run build:vite && powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../../scripts/prepare-local-mcp-windows.ps1",
+    "beforeDevCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../../scripts/prepare-local-mcp-windows.ps1 && pnpm run dev:vite"
+  },
   "app": {
     "windows": [{
       "label": "main",
@@ -13,5 +17,11 @@
       "trafficLightPosition": null
     }]
   },
-  "bundle": { "targets": ["nsis"] }
+  "bundle": {
+    "targets": ["nsis"],
+    "resources": {
+      "../dist-remote/": "remote-ui/",
+      "../dist-local-mcp/": "local-mcp-runtime/"
+    }
+  }
 }

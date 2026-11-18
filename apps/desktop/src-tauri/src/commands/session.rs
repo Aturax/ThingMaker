@@ -59,6 +59,7 @@ pub struct OpenRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    pub resources: Option<thingmaker_supervisor::integrations::member_resources::ResourceSelection>,
     /// The team this session starts with. `None` keeps the one it had, or
     /// the user's default.
     #[serde(default)]
@@ -71,6 +72,12 @@ pub struct OpenRequest {
     /// whole conversation.
     #[serde(default)]
     pub fork_at: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(super) struct LocalSessionSetup {
+    pub model: String,
+    pub resources: Option<thingmaker_supervisor::integrations::member_resources::ResourceSelection>,
 }
 
 #[derive(Debug, Serialize)]
@@ -205,6 +212,7 @@ fn adapter_package_root(script: &Path) -> Option<PathBuf> {
 pub(crate) fn program_of(target: &LaunchTarget, launch: &AgentLaunch) -> PathBuf {
     match launch {
         AgentLaunch::Claude(options) if options.local.is_some() => options.node.clone(),
+        AgentLaunch::Codex(options) if options.local => options.program.clone(),
         _ => target.executable.clone(),
     }
 }
@@ -241,6 +249,25 @@ fn local_launch(
             options.resume = resume;
             options.local = Some(LocalTarget { kind, model: name.clone(), served: name, window, home });
             Ok((LaunchTarget::executable(exe), AgentLaunch::Claude(options)))
+        }
+        LocalKind::Agent if local::agent_harness(&id) == Some(Provider::Codex) => {
+            let binary = state.resolve_provider(Provider::Codex)?.program;
+            let served = local::prepare_agent_model(&name, window).map_err(DesktopError::not_ready)?;
+            let codex_home = home.join("codex");
+            std::fs::create_dir_all(&codex_home).map_err(|error| DesktopError::io(error.to_string()))?;
+            let programs = binary.parent().map(Path::to_path_buf).into_iter().collect::<Vec<_>>();
+            sandbox::prepare(root, &home, &programs).map_err(DesktopError::unsupported)?;
+            let (program, prefix_args) = sandbox::wrap(&binary, &[]).map_err(DesktopError::unsupported)?;
+            let mut options = CodexLaunchOptions::new(root, binary);
+            options.local = true;
+            options.codex_home = Some(codex_home);
+            options.reserved = reserved;
+            options.resume = resume;
+            options.model = Some(served);
+            options.permission_mode = permission_for(record);
+            options.config.insert("web_search".into(), "disabled".into());
+            options.config.insert("model_context_window".into(), window.into());
+            Ok((LaunchTarget { executable: program, prefix_args }, AgentLaunch::Codex(options)))
         }
         LocalKind::Agent => {
             let adapter = state.resolve_provider(Provider::Claude).map_err(|error| DesktopError::not_ready(format!("A local agent runs Claude Code's adapter, which is missing: {}", error.message)))?;
@@ -301,11 +328,10 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
     let recorded = match &request.mode {
         OpenRequestMode::Resume { session_id } | OpenRequestMode::Fork { session_id } => state
             .with_storage(|storage| storage.session_by_agent_id(&record.id, session_id))
-            .map_err(storage_error)?
-            .map(|session| session.provider),
+            .map_err(storage_error)?,
         OpenRequestMode::New => None,
     };
-    let provider = recorded.or(request.provider).unwrap_or_default();
+    let provider = recorded.as_ref().map(|row| row.provider).or(request.provider).unwrap_or_default();
     // A session that never got a prompt has no transcript, so its provider
     // has nothing to resume and would answer "resource not found". Its row
     // is a tombstone: hidden, and said so plainly.
@@ -352,6 +378,14 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
         OpenRequestMode::Resume { session_id } => Some(session_id.clone()),
         OpenRequestMode::New | OpenRequestMode::Fork { .. } => None,
     };
+    let saved = if provider == Provider::Local {
+        recorded.as_ref().map(|row| state.with_storage(|s| s.setting_get::<LocalSessionSetup>("localSessionSetup", &row.id))).transpose().map_err(storage_error)?.flatten()
+    } else { None };
+    let (model, selection) = match saved {
+        Some(saved) => (Some(saved.model), saved.resources),
+        None => (model, request.resources.clone()),
+    };
+    let resolved = super::member_resources::resolve_for(&state, Path::new(&record.canonical_root), provider, model.as_deref(), selection.as_ref())?;
     let opened_model = model.clone();
     let (target, mut launch) = build_launch(&state, &record, provider, model, effort, resume, session_id.clone())?;
     let generation = 1;
@@ -374,7 +408,21 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
     };
     let combo = super::delegation::starting_combo(&state, request.combo.clone(), row_before.as_deref());
     super::delegation::prepare_orchestrator(&state, session_id.as_str(), PathBuf::from(&record.canonical_root), &combo, &mut launch, &mut config);
+    if let Some(resources) = resolved {
+        match thingmaker_supervisor::integrations::member_resources::apply_to_launch(resources, &mut launch) {
+            Ok(files) => config.resource_files = files,
+            Err(error) => {
+                super::delegation::release(&state, session_id.as_str()).await;
+                return Err(error);
+            }
+        }
+    }
     config.launch = launch;
+    #[cfg(windows)]
+    if let Err(error) = super::local_mcp::prepare(&state, &mut config).await {
+        super::delegation::release(&state, session_id.as_str()).await;
+        return Err(error);
+    }
 
     let actor = match SessionActor::open(config).await {
         Ok(actor) => actor,
@@ -399,6 +447,10 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
     let desktop_session = state
         .with_storage(|storage| storage.session_upsert(&record.id, &recorded_id, origin, provider))
         .map_err(storage_error)?;
+    if provider == Provider::Local && let Some(model) = opened_model.as_ref() {
+        let setup = LocalSessionSetup { model: model.clone(), resources: selection };
+        state.with_storage(|s| s.setting_set("localSessionSetup", &desktop_session.id, &setup)).map_err(storage_error)?;
+    }
     // A fork is listed under the session it was copied from.
     if request.side_of.is_none()
         && matches!(request.mode, OpenRequestMode::Fork { .. })

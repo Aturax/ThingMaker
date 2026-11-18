@@ -207,10 +207,17 @@ export function isRetiredModel(provider: Provider, model: { id: string; name: st
 }
 export function parseLocalModel(id: string | undefined): { kind: LocalKind; name: string } {
   if (!id) return { kind: "chat", name: "" };
+  if (id.startsWith("@agent/@codex/")) return { kind: "agent", name: id.slice("@agent/@codex/".length) };
   if (id.startsWith("@agent/")) return { kind: "agent", name: id.slice("@agent/".length) };
   return { kind: "chat", name: id.startsWith("@chat/") ? id.slice("@chat/".length) : id };
 }
-export function localModelId(kind: LocalKind, name: string): string {
+export function localAgentHarness(id?: string): "claude" | "codex" | undefined {
+  if (id?.startsWith("@agent/")) return id.startsWith("@agent/@codex/") ? "codex" : "claude";
+  return undefined;
+}
+
+export function localModelId(kind: LocalKind, name: string, harness: "claude" | "codex" = "claude"): string {
+  if (kind === "agent" && harness === "codex") return `@agent/@codex/${name}`;
   return `@${kind}/${name}`;
 }
 export type LocalFit = "fits" | "tight" | "too_big";
@@ -545,7 +552,7 @@ export type Combo = {
 export const EMPTY_COMBO: Combo = { workers: [], nativeSubagents: false };
 
 /** Who leads a team: a provider, and optionally its model and effort. */
-export type OrchestratorChoice = { provider: Provider; model?: string; effort?: string };
+export type OrchestratorChoice = { resources?: MemberResourceSelection; provider: Provider; model?: string; effort?: string };
 
 /** A saved team: an orchestrator and its workers, ready to start a session with or apply to one. */
 export type TeamPreset = {

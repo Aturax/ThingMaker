@@ -33,7 +33,7 @@ import { Markdown, type PathHandler } from "../markdown";
 import { copiesItself, forkPointAt, splitNestedReports } from "../fork";
 import { isLocalChat } from "../localModels";
 import { ContextRing } from "./ContextRing";
-import { LocalBadge } from "./LocalBadge";
+import { LocalBadge, PendingLocalResources } from "./LocalBadge";
 import { NestedBanner, NestedReportsCard, NestedReportsStrip } from "./NestedSessions";
 import type { Card } from "../projection";
 import { assignImages, keyOf, type ImageRef } from "../transcriptImages";
@@ -1421,6 +1421,7 @@ export function SessionPanel({ sessionId }: { sessionId: string }) {
           <ConfigPickers configOptions={configOptions} disabled={projection.process === "exited" || busy !== null} sessionId={sessionId} />
           {!configOptions && <span className="chip small">{t("the account's default model")}</span>}
           {!localChat && <TeamChip disabled={projection.process === "exited"} sessionId={sessionId} />}
+          <PendingLocalResources sessionId={sessionId} />
           {session.snapshot.provider === "local" && <LocalBadge configOptions={configOptions} localChat={localChat} sessionId={sessionId} />}
           <span className="composer-spacer" />
           {active && (

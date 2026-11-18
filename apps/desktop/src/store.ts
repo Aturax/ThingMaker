@@ -51,7 +51,7 @@ import type {
   ProviderVersion,
   TurnPhase,
 } from "@thingmaker/contracts";
-import { EMPTY_COMBO, JOB_EVENT, ULTRA_REVIEW_EVENT, type UltraReview, type UrDecision, type UrStartRequest, SESSION_TITLE_EVENT, type SessionTitleChange, ODYSSEY_STATE_NOTE, PROVIDERS, PROVIDER_LABELS, BIGTHING_EVENT, asConfigOptions, ACCOUNT_PROVIDERS, isEffortOption, isRetiredModel, parseLocalModel, type AccountView, type Combo, type JobView, type ProviderModel, type BigThingEvent, type BigThingRuntime, type NestedReport, type TeamPreset, type RenameReport, type WipeReport, type WorkerSlot } from "@thingmaker/contracts";
+import { EMPTY_COMBO, JOB_EVENT, ULTRA_REVIEW_EVENT, type UltraReview, type UrDecision, type UrStartRequest, SESSION_TITLE_EVENT, type SessionTitleChange, ODYSSEY_STATE_NOTE, PROVIDERS, PROVIDER_LABELS, BIGTHING_EVENT, asConfigOptions, ACCOUNT_PROVIDERS, isEffortOption, isRetiredModel, localAgentHarness, parseLocalModel, type AccountView, type Combo, type JobView, type ProviderModel, type BigThingEvent, type BigThingRuntime, type NestedReport, type TeamPreset, type RenameReport, type WipeReport, type WorkerSlot } from "@thingmaker/contracts";
 import { isLocalChat } from "./localModels";
 import { HANDOFF_SPLIT, handoffBrief, hasConversation, helperPresetFrom, readHelperPresets, readPresets, upsertHelperPreset, upsertJob, upsertPreset, withoutHandoff, type HelperPreset } from "./team";
 import { copiesItself, forkBranch, forkTitle, type ForkPoint } from "./fork";
@@ -636,7 +636,7 @@ export function basenameOf(path: string): string {
  * so every caller names a session the same way.
  */
 /** Where a session's next message goes when it is another provider. */
-export type PendingProvider = { provider: Provider; model?: string; effort?: string };
+export type PendingProvider = { resources?: WorkerSlot["resources"]; provider: Provider; model?: string; effort?: string };
 /** The session a fork is copied from: open (`key`) or only in the list. */
 export type ForkSource = { workspaceId: string; agentSessionId: string; provider: Provider; key?: string };
 
@@ -732,7 +732,7 @@ function launchDefaults(defaults: SessionDefaults, provider: Provider): { model?
  * override the remembered ones, a team, and a first message that goes out as
  * soon as the agent is ready.
  */
-export type NewSessionLaunch = { model?: string; reasoningEffort?: string; combo?: Combo; message?: string };
+export type NewSessionLaunch = { resources?: WorkerSlot["resources"]; model?: string; reasoningEffort?: string; combo?: Combo; message?: string };
 
 /** The adapter's alias for its current Opus. */
 const CLAUDE_DEFAULT_MODEL = "opus";
@@ -975,6 +975,8 @@ async function attachLive(get: Get, set: Set, handle: SessionHandle, workspaceId
 function switchesSession(snapshot: { provider?: Provider; capabilities?: { agentName?: string } | null } | undefined, pending: PendingProvider): boolean {
   if (!snapshot || pending.provider !== snapshot.provider) return true;
   if (pending.provider !== "local" || !pending.model) return false;
+  const harness = localAgentHarness(pending.model);
+  if (harness && !isLocalChat(snapshot)) return true;
   return parseLocalModel(pending.model).kind !== (isLocalChat(snapshot) ? "chat" : "agent");
 }
 
@@ -2414,6 +2416,7 @@ export const useStore = create<State>((set, get) => ({
         ...launchDefaults(defaults, chosen),
         ...(launch?.model ? { model: launch.model } : {}),
         ...(launch?.reasoningEffort ? { reasoningEffort: launch.reasoningEffort } : {}),
+        ...(launch?.resources ? { resources: launch.resources } : {}),
         ...(launch?.combo ? { combo: launch.combo } : {}),
       });
       // Keep the preparation view visible through snapshot, subscription and
@@ -2666,6 +2669,7 @@ export const useStore = create<State>((set, get) => ({
           workspaceId: session.workspaceId,
           mode: { mode: "new" },
           provider: preset.orchestrator.provider,
+          ...(preset.orchestrator.resources ? { resources: preset.orchestrator.resources } : {}),
           ...(preset.orchestrator.model ? { model: preset.orchestrator.model } : {}),
           ...(preset.orchestrator.effort ? { reasoningEffort: preset.orchestrator.effort } : {}),
           combo: preset.combo,
@@ -2817,6 +2821,7 @@ export const useStore = create<State>((set, get) => ({
         provider: pending.provider,
         ...launchDefaults(get().sessionDefaults, pending.provider),
         ...(model ? { model } : {}),
+        ...(pending.resources ? { resources: pending.resources } : {}),
         ...(pending.effort ? { reasoningEffort: pending.effort } : {}),
         ...(team ? { combo: team } : {}),
       });
@@ -2970,11 +2975,12 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async openSessionWithPreset(workspaceId, preset, message) {
-    const { provider, model, effort } = preset.orchestrator;
+    const { provider, model, effort, resources } = preset.orchestrator;
     await get().openSession(workspaceId, { mode: "new" }, provider, {
       ...(model ? { model } : {}),
       ...(effort ? { reasoningEffort: effort } : {}),
       combo: preset.combo,
+      ...(resources ? { resources } : {}),
       ...(message ? { message } : {}),
     });
   },
@@ -2982,7 +2988,7 @@ export const useStore = create<State>((set, get) => ({
   async applyPresetToSession(sessionId, preset) {
     const session = get().sessions[sessionId];
     if (!session) return "applied";
-    if (preset.orchestrator.provider !== session.snapshot.provider) return "needs_handoff";
+    if (preset.orchestrator.provider !== session.snapshot.provider || (preset.orchestrator.provider === "local" && localAgentHarness(preset.orchestrator.model))) return "needs_handoff";
     await get().saveTeam(sessionId, preset.combo);
     const options = asConfigOptions(session.snapshot.configOptions);
     const model = options.find((option) => option.configId === "model");

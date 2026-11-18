@@ -26,6 +26,8 @@ pub mod support;
 pub mod terminal;
 pub mod ultrareview;
 pub mod local;
+#[cfg(windows)]
+mod local_mcp;
 pub mod accounts;
 pub mod update;
 pub mod workspace;

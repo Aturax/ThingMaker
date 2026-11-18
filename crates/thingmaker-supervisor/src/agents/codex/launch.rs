@@ -36,6 +36,8 @@ pub struct CodexLaunchOptions {
     pub permission_mode: PermissionStance,
     /// `$CODEX_HOME` for this session, when it is not the default account.
     pub codex_home: Option<PathBuf>,
+    /// Route this sandboxed app-server to the local Ollama Responses API.
+    pub local: bool,
     /// Developer instructions for the thread: an orchestrator's briefing on
     /// its team.
     pub developer_instructions: Option<String>,
@@ -61,6 +63,7 @@ impl CodexLaunchOptions {
             effort: None,
             resume: None,
             permission_mode: PermissionStance::ReadOnly,
+            local: false,
             codex_home: None,
             developer_instructions: None,
             config: serde_json::Map::new(),
@@ -69,6 +72,14 @@ impl CodexLaunchOptions {
     }
 
     pub fn arguments(&self) -> Vec<String> {
+        if self.local {
+            return vec!["-c".into(), "model_provider=\"thingmaker_local\"".into(),
+                "-c".into(), "model_providers.thingmaker_local.name=\"Ollama\"".into(),
+                "-c".into(), "model_providers.thingmaker_local.wire_api=\"responses\"".into(),
+                "-c".into(), format!("model_providers.thingmaker_local.base_url={}", json!(format!("{}/v1", crate::agents::local::ollama::address().trim_end_matches('/')))),
+                "-c".into(), "web_search=\"disabled\"".into(),
+                "-c".into(), "analytics.enabled=false".into(), "app-server".into()];
+        }
         vec!["app-server".into()]
     }
 }
@@ -106,6 +117,13 @@ pub fn initialize_params(name: &str, title: &str, version: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_codex_disables_provider_hosted_search() {
+        let mut options = CodexLaunchOptions::new("/work", "codex");
+        options.local = true;
+        assert!(options.arguments().windows(2).any(|pair| pair == ["-c", "web_search=\"disabled\""]));
+    }
 
     #[test]
     fn the_workspaces_trust_decides_the_sandbox_not_the_users_config() {

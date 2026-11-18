@@ -179,7 +179,7 @@ export function LocalModelsCard({ info }: { info: ProviderInfo }) {
                 </div>
               )}
 
-              {!status.agentsAvailable && <p className="small muted local-line">{t("Local agents run on Claude Code's adapter, which is not installed. Chats work without it.")}</p>}
+              {!status.agentsAvailable && <p className="small muted local-line">{t("Install Codex or the Claude Code adapter to use local agents.")}</p>}
 
               <div className="local-section">
                 <span className="local-cap">{t("Installed")}</span>

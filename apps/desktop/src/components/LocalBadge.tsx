@@ -3,9 +3,23 @@
  * in a chat, a way on to an agent on the same model.
  */
 import { asConfigOptions, localModelId } from "@thingmaker/contracts";
+import { MemberResources } from "./MemberResources";
 import { api } from "../ipc";
 import { useStore } from "../store";
 import { t } from "../i18n";
+
+export function PendingLocalResources({ sessionId }: { sessionId: string }) {
+  const pending = useStore((s) => s.pendingProvider[sessionId]);
+  const workspace = useStore((s) => s.sessions[sessionId]?.workspaceId);
+  const setPending = useStore((s) => s.setPendingProvider);
+  if (pending?.provider !== "local" || !pending.model?.startsWith("@agent/")) return null;
+  return <details><summary>{t("Skills and connections")}</summary>
+    <MemberResources initialWorkspace={workspace ?? ""} worker={{ name: "", provider: "local", capabilities: [], model: pending.model,
+      ...(pending.resources ? { resources: pending.resources } : {}) }} onChange={(worker) => setPending(sessionId, {
+        provider: "local", ...(worker.model ? { model: worker.model } : {}), ...(worker.resources ? { resources: worker.resources } : {}),
+      })} />
+  </details>;
+}
 
 export function LocalBadge({ sessionId, localChat, configOptions }: { sessionId: string; localChat: boolean; configOptions: unknown }) {
   const catalog = useStore((s) => s.providerModels.local);
@@ -36,7 +50,7 @@ export function LocalBadge({ sessionId, localChat, configOptions }: { sessionId:
           {t("Continue as an agent")}
         </button>
       )}
-      {pending?.provider === "local" && pending.model === agent && (
+      {pending?.provider === "local" && pending.model?.startsWith("@agent/") && (
         <button className="button button-small" onClick={() => setPending(sessionId, null)} type="button">
           {t("Stay in the chat")}
         </button>

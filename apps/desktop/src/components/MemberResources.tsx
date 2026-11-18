@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { localAgentHarness, localModelId, parseLocalModel } from "@thingmaker/contracts";
 import type { MemberResourceCatalog, MemberResourceSelection, WorkerSlot } from "@thingmaker/contracts";
 import { api } from "../ipc";
 import { useStore } from "../store";
@@ -8,16 +9,18 @@ import { Segmented } from "./settings/controls";
 
 /** The workspace is a preview: saved references resolve against the actual
  * job workspace at launch. Selecting a group is a snapshot, never a wildcard. */
-export function MemberResources({ worker, onChange }: { worker: WorkerSlot; onChange: (worker: WorkerSlot) => void }) {
+export function MemberResources({ worker, onChange, initialWorkspace = "" }: { initialWorkspace?: string; worker: WorkerSlot; onChange: (worker: WorkerSlot) => void }) {
   const workspaces = useStore((s) => s.workspaces);
   const account = useStore((s) => `${s.accounts.claude?.find((entry) => entry.active)?.id ?? ""}:${s.accounts.codex?.find((entry) => entry.active)?.id ?? ""}`);
-  const [workspaceId, setWorkspaceId] = useState("");
+  const [workspaceId, setWorkspaceId] = useState(initialWorkspace);
   const [refresh, setRefresh] = useState(0);
   const [catalog, setCatalog] = useState<MemberResourceCatalog | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState<"skills" | "mcps">("skills");
-  const supported = worker.provider === "claude" || worker.provider === "codex";
+  const localHarness = worker.provider === "local" ? localAgentHarness(worker.model) : undefined;
+  const harness = localHarness ?? worker.provider;
+  const supported = harness === "claude" || harness === "codex";
   const custom = worker.resources !== undefined;
 
   useEffect(() => {
@@ -25,12 +28,13 @@ export function MemberResources({ worker, onChange }: { worker: WorkerSlot; onCh
     let cancelled = false;
     setCatalog(null);
     setError(null);
-    void api.memberResources(workspaceId || null, worker.provider).then(
+    const preview = localHarness ? api.memberResources(workspaceId || null, harness, true) : api.memberResources(workspaceId || null, harness);
+    void preview.then(
       (value) => { if (!cancelled) setCatalog(value); },
       (failure: unknown) => { if (!cancelled) setError(typeof failure === "object" && failure !== null && "message" in failure ? String(failure.message) : String(failure)); },
     );
     return () => { cancelled = true; };
-  }, [workspaceId, refresh, supported, custom, account, worker.provider]);
+  }, [workspaceId, refresh, supported, custom, account, harness, localHarness]);
 
   if (!supported && !custom) return null;
   const inherit = () => {
@@ -49,6 +53,11 @@ export function MemberResources({ worker, onChange }: { worker: WorkerSlot; onCh
   return (
     <section className="member-resources" aria-label={t("Skills and connections")}>
       <div className="row wrap">
+        {localHarness && <label>Harness <select className="input" value={localHarness} onChange={(event) => onChange({
+          ...worker, model: localModelId("agent", parseLocalModel(worker.model).name, event.target.value === "codex" ? "codex" : "claude"),
+        })}>
+          <option value="claude">Claude Code</option><option value="codex">Codex</option>
+        </select></label>}
         <strong>{t("Skills and connections")}</strong>
         <select className="input" aria-label={t("Resource mode")} value={custom ? "custom" : "inherit"} onChange={(event) => event.target.value === "inherit" ? inherit() : patch({ skills: [], mcps: [] })}>
           <option value="inherit">{t("Inherit configuration")}</option>

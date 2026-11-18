@@ -18,7 +18,7 @@ export const local: Record<string, string> = {
   "Starting…": "Arrancando…",
   "Start Ollama": "Arrancar Ollama",
   "Install Ollama, and ThingMaker finds it. There is nothing else to set up.": "Instala Ollama y ThingMaker lo encuentra. No hay nada más que configurar.",
-  "Local agents run on Claude Code's adapter, which is not installed. Chats work without it.": "Los agentes locales funcionan con el adaptador de Claude Code, que no está instalado. Los chats funcionan sin él.",
+  "Install Codex or the Claude Code adapter to use local agents.": "Instala Codex o el adaptador de Claude Code para usar agentes locales.",
   "No models yet. Get one below.": "Todavía no hay modelos. Consigue uno abajo.",
   "Parameters": "Parámetros",
   "Can be": "Puede ser",
