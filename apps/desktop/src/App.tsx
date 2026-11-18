@@ -19,6 +19,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { IconFolder, IconKey } from "./components/icons";
 import { t } from "./i18n";
 import { SetupGuide } from "./components/SetupGuide";
+import { BrowserLauncher } from "./components/WebView";
 import { MOD_KEY, readSetup } from "./setupProgress";
 
 
@@ -57,6 +58,7 @@ function WelcomeCard() {
             <IconKey size={15} /> {t("Set up providers")}
           </button>
         </div>
+        {!IS_REMOTE && <BrowserLauncher />}
         <dl className="welcome-keys">
           <dt>{MOD_KEY}K</dt>
           <dd>{t("command palette")}</dd>

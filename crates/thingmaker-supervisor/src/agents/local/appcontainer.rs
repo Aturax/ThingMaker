@@ -26,6 +26,13 @@ pub fn prepare(root: &Path, home: &Path, programs: &[PathBuf]) -> Result<(), Str
     thingmaker_appcontainer::grant(root, &sid, true)?;
     thingmaker_appcontainer::grant(home, &sid, true)?;
     for program in programs {
+        // Windows provides execution access to installed programs. A standard
+        // user cannot rewrite their ACLs (for example Program Files/nodejs).
+        // The actual child still runs with the AppContainer token.
+        if ["ProgramFiles", "ProgramFiles(x86)"].iter().filter_map(std::env::var_os)
+            .any(|base| program.starts_with(PathBuf::from(base))) {
+            continue;
+        }
         thingmaker_appcontainer::grant(program, &sid, false)?;
     }
     Ok(())

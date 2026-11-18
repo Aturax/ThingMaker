@@ -228,6 +228,8 @@ pub fn run() {
             commands::session::session_cancel,
             commands::session::session_set_config_option,
             commands::session::session_stop,
+            commands::web::web_control,
+            commands::web::web_browser_open,
             commands::session::session_list_open,
             commands::session::session_history,
             commands::session::session_token_usage,

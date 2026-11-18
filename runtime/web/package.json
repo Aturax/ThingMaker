@@ -1,0 +1,12 @@
+{
+  "name": "thingmaker-web-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@opencode/browse": "0.1.5",
+    "pdf-parse": "1.1.1",
+    "playwright-core": "1.62.1",
+    "zod": "3.25.76"
+  }
+}

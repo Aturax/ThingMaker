@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod screen;
+pub mod web;
 pub mod screen_stream;
 pub mod screen_tools;
 pub mod suggestions;

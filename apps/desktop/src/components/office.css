@@ -3,6 +3,12 @@
    light and dark; only the frame around it follows the theme. */
 
 .office-stage, .office-device-view { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.office-web { display: grid; gap: 8px; min-width: 0; }
+.office-web > button { justify-self: start; }
+.office-web form { display: flex; gap: 4px; }
+.office-web input, .office-web select { min-width: 0; width: 100%; }
+.office-web p { margin: 0; overflow-wrap: anywhere; }
+.office-web .web-frame { display: block; width: 100%; height: auto; aspect-ratio: 4 / 3; }
 .office-view-switch { display: flex; gap: 4px; }
 .office-view-switch button { flex: 1; border-radius: 6px; padding: 6px 8px; }
 .office-view-switch button[aria-pressed="true"] { color: var(--accent, #ff6b22); border-color: currentColor; }
