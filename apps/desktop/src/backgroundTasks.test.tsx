@@ -70,6 +70,12 @@ describe("the background tasks icon", () => {
     const { container } = render(<BackgroundTasksButton sessionId="s1" />);
     expect(container.querySelector(".badge-dot-running")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Background tasks: 1 running" }));
+    const running = screen.getByText("Running (1)");
+    const finished = screen.getByText("Finished (1)");
+    expect(running.parentElement?.hasAttribute("open")).toBe(true);
+    expect(finished.parentElement?.hasAttribute("open")).toBe(false);
+    fireEvent.click(finished);
+    expect(finished.parentElement?.hasAttribute("open")).toBe(true);
     const rows = screen.getAllByRole("listitem");
     expect(within(screen.getByRole("region", { name: "Running" })).getAllByRole("listitem")).toHaveLength(1);
     expect(within(screen.getByRole("region", { name: "Finished" })).getAllByRole("listitem")).toHaveLength(1);
@@ -85,6 +91,7 @@ describe("the background tasks icon", () => {
     const { container } = render(<BackgroundTasksButton sessionId="s1" />);
     expect(container.querySelector(".badge-dot")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Background tasks: all ended" }));
+    fireEvent.click(screen.getByText("Finished (1)"));
     expect(screen.getByRole("listitem").textContent).toContain("Failed (exit 2)");
   });
 
@@ -135,6 +142,7 @@ describe("the background tasks icon", () => {
     const read = vi.spyOn(api, "sessionBackgroundOutput").mockResolvedValue({ text: "Installed ThingMaker.app\n\n[exited with code 0]\n", bytes: 41 });
     render(<BackgroundTasksButton sessionId="s1" />);
     fireEvent.click(screen.getByRole("button", { name: "Background tasks: all ended" }));
+    fireEvent.click(screen.getByText("Finished (1)"));
     fireEvent.click(screen.getByText("pnpm app --restart"));
     await waitFor(() => expect(screen.getByText(/Installed ThingMaker.app/)).toBeTruthy());
     expect(read).toHaveBeenCalledWith({ id: "s1", attachmentGeneration: "1" }, "bapnhs6hh");
