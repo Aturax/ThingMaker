@@ -87,6 +87,25 @@ flowchart LR
   sessions through the same actors the tabs attach to and keeps going while
   ThingMaker sits in the menu bar with no window open.
 
+### Share a tab from Chrome
+
+1. In a conversation, open **Web → Add to Chrome** and install [OpenCode Browse](https://chromewebstore.google.com/detail/browse/mfnicocicmmlkpjnaffgihfjhdgjkdjg). Windows x64 includes the Browse 0.1.5 native companion. On macOS install the [official CLI](https://opencode.ai/product/browse) at `~/.local/bin/browse`.
+2. Enable web access if prompted. If Chrome is not paired yet, choose **Pair OpenCode Browse**. In the extension options open **Advanced**, enter the displayed relay address and code, and click **Connect**. This pairs the browser profile once.
+3. On the desired Chrome tab, click the Browse toolbar icon to lend it. In the conversation click **Show lent tabs** and choose that tab. It starts under your control. Give the agent a task, then click **Return control to agent** in ThingMaker.
+4. Choose **Take control** in ThingMaker to pause that chat’s browser actions and interrupt its current turn if it is still running. Edit the real page in Chrome, then click **Return control to agent**. The same chat inspects the page again; switching Chrome tabs does not change the target. Use **Return to built-in browser** to detach the chat. Clicking the Browse toolbar icon again withdraws the tab from Browse itself.
+
+ThingMaker pins the lent Chrome target to one chat. Its isolated searches and visual reads continue independently. OpenCode Browse's extension and relay are maintained by Anomaly under the MIT license.
+
+### Shared Web tab
+
+Open **Web** next to **Crew** and **Screen** in a desktop conversation. Claude Code and Codex receive per-session MCP tools for search, citation and navigation, including when their configured model comes from a third-party endpoint. A model must support tool calls. In Local Models, choose **Agent**, then click **Allow web access for this local session**. Each new attachment starts with its own browser and local agents start private.
+
+Choose **Take control** to click the page, scroll, type, paste, change a selection or enter an address. **Return control to agent** sends a continuation to the same conversation. The agent inspects the current page, including changed filters. Closing the panel keeps the page available to the agent. Stopping the session closes its browser.
+
+The Windows x64 installer includes its own Node.js, Chromium headless shell, MCP libraries and PDF reader. Open **Open web browser** on the home or project screen to search or visit a URL before setting up an AI provider. Agent searches and JavaScript-rendered source reads run in the background and preserve the shared page, including unsaved form input. For charts or diagrams, vision-capable agents can call `web_read` with `screenshot: true` to receive a PNG of the viewport. An optional `scroll_y` selects content below the fold. The address bar searches Bing in the shared page. They require internet access. The private runtime does not use the system Node.js, a developer checkout, Docker or a SearXNG service. Agent-driven browsing requires a configured tool-capable agent.
+
+On macOS the current integration uses a separately built web-mcp installation in `~/repos/web-mcp` or `THINGMAKER_WEB_MCP_DIR`, with Node.js, Playwright Chromium and a SearXNG instance. Set `WEB_SCOUT_SEARXNG_URL` to override the search endpoint.
+
 ## Big Thing
 
 Big Thing is for work that takes more than one turn — a roadmap, a feature

@@ -2,8 +2,8 @@
 
 Models installed in [Ollama](https://ollama.com) on this computer, as a
 fourth provider beside Claude Code, Codex and Gemini. **Free:** nothing is
-billed and no account is used. **Private:** what a local session reads,
-writes, runs or says stays on this computer.
+billed and no account is used. Sessions start private. A local agent can
+access public websites if you enable web access in its Web tab.
 
 ## Two ways to run a model
 
@@ -34,7 +34,8 @@ not to think (`/no_think`), because thinking takes most of a turn on a laptop.
 - **Claude Code's background traffic is off for agents** (telemetry, error
   reports, feature flags, update checks). They use their own settings folder
   in ThingMaker's data folder, never `~/.claude`, so the person's Claude login,
-  MCP servers and plugins are not used. Web tools are not offered.
+  MCP servers and plugins are not used. The shared Web tab can authorize
+  ThingMaker's separate web process for the current attachment.
 - **A local lead hires only local helpers**, and Big Thing never moves a local
   goal to another provider.
 - **A local helper under a cloud lead**, or a local seat in a mixed
@@ -71,6 +72,9 @@ Ollama loads the model again when it is needed.
   writes a file from inside the sandbox.
 - `agents/local/sandbox.rs`: the macOS sandbox reaches this computer and
   nothing else.
-- `thingmaker-appcontainer`: quoting and parsing; the Windows code is
-  type-checked with `cargo check --target x86_64-pc-windows-msvc` and has not
-  yet run on Windows.
+- The desktop's opt-in `commands::web::tests` run Claude Code inside the
+  Windows AppContainer and Codex through its app-server with an Ollama model.
+  They check that the agent opens a real source in the shared browser.
+  The browser handoff and filter selection can also be tested with
+  `node --test runtime/web/session.test.mjs` and `THINGMAKER_WEB_MCP_DIR`
+  pointing to a built web-mcp installation.

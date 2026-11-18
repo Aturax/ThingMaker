@@ -185,7 +185,7 @@ export function OfficePane({ sessionId }: { sessionId: string }) {
           <p className="office-custom-note">{t("Your images stay on this device.")}</p>
         </div>
       )}
-      <OfficeScreen key={sessionId}>
+      <OfficeScreen key={sessionId} webHandle={session.snapshot.provider === "gemini" ? undefined : session.handle}>
         <OfficeScene crew={crew} logo={logo} plan={boardPlan(projection.plan?.content, foreground)} wall={wall} />
       </OfficeScreen>
       <details className="office-roster" open={crew.length > 1}>

@@ -193,6 +193,7 @@ impl WorkerLauncher for HostLauncher {
                     config.environment = config.environment.clone().with_set("MCP_TOOL_TIMEOUT", CLAUDE_MCP_TOOL_TIMEOUT_MS);
                 }
             }
+            let web = super::web::prepare(&state, &mut config).await;
             let actor = SessionActor::open(config).await?;
             let snapshot = actor.snapshot().await?;
             let recorded = snapshot.agent_session_id.clone().unwrap_or_else(|| reserved.as_str().to_string());
@@ -205,6 +206,7 @@ impl WorkerLauncher for HostLauncher {
                 s.session_set_parent(&row.id, parent.as_ref().map(|parent| parent.id.as_str()))?;
                 s.session_set_title_overlay(&row.id, Some(&spec.title))
             });
+            super::web::attach(&state, &actor, web);
             state.insert_actor(actor.handle().id.clone(), recorded, actor.clone(), spec.root.clone());
             state.set_actor_model(&actor.handle().id, spec.slot.model.as_deref());
             Ok((actor, Some(revision)))

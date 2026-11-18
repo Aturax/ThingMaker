@@ -8,6 +8,8 @@ import { PROVIDERS, PROVIDER_LABELS, parseLocalModel, type Provider, type Sessio
 import { startingProvider, useStore } from "../store";
 import { api } from "../ipc";
 import { OutboxPanel } from "./OutboxPanel";
+import { BrowserLauncher } from "./WebView";
+import { IS_REMOTE } from "../remote/mode";
 import { WipeDialog } from "./WipeDialog";
 import { RenameFolderDialog } from "./RenameFolderDialog";
 import { ProviderMark } from "./ProviderMark";
@@ -147,6 +149,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
       {renamingFolder && <RenameFolderDialog onClose={() => setRenamingFolder(false)} workspaceId={workspaceId} />}
 
       <OutboxPanel workspaceId={workspaceId} />
+      {!IS_REMOTE && <BrowserLauncher key={workspaceId} />}
 
       <RecentSessions records={records ?? []} trusted={trusted} workspaceId={workspaceId} />
         </div>

@@ -1729,6 +1729,22 @@ export type OpenResponse = { handle: SessionHandle; desktopSessionId: string; sn
 
 /** A locally connected device whose screen can be previewed read-only. */
 export type ScreenDevice = { id: string; name: string; platform: "android" | "ios" };
+export type WebFrame = {
+  storeUrl?: string | null; chrome?: "connected" | "disconnected"; pairingCode?: string; relayAddress?: string;
+  lentTabs?: {key:string; title:string; url:string}[];
+  enabled: boolean; human: boolean; activity: string; revision: number; url: string; image: string | null;
+  choices: { label: string; value: string; selected: boolean }[];
+};
+export type WebAction =
+  | { kind: "enable" | "take" | "release" | "frame" | "close" | "pair" | "unshare" | "listBrowse" }
+  | { kind: "attachBrowse"; key:string }
+  | { kind: "search"; query: string }
+  | { kind: "open"; url: string }
+  | { kind: "click"; revision: number; x: number; y: number }
+  | { kind: "scroll"; revision: number; x: number; y: number; dy: number }
+  | { kind: "key"; revision: number; key: string }
+  | { kind: "select"; revision: number; value: string }
+  | { kind: "text"; revision: number; text: string };
 export type ScreenStreamEvent = { kind: "frame"; sequence: number; dataUrl: string } | { kind: "error"; message: string };
 /** A tool that live Android video needs. */
 export type ScreenTool = "adb" | "scrcpy" | "ffmpeg";
@@ -1747,6 +1763,8 @@ export type ScreenToolsInstall = { tools: ScreenTools; problem: ScreenToolsProbl
 /** Command names exposed by the Tauri host. */
 export const COMMANDS = {
   screenDevices: "screen_devices",
+  webControl: "web_control",
+  webBrowserOpen: "web_browser_open",
   screenCapture: "screen_capture",
   screenStreamStart: "screen_stream_start",
   screenStreamStop: "screen_stream_stop",

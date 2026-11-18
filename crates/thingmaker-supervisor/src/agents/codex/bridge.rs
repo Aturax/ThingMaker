@@ -487,7 +487,14 @@ fn mcp_config(servers: Option<&Value>) -> Option<Value> {
     for server in servers {
         let Some(name) = server.get("name").and_then(Value::as_str) else { continue };
         let entry = if let Some(url) = server.get("url").and_then(Value::as_str) {
-            json!({ "url": url })
+            let mut http = json!({ "url": url });
+            if let Some(headers) = server.get("headers").and_then(Value::as_array) {
+                let headers: Map<String, Value> = headers.iter().filter_map(|pair| {
+                    Some((pair.get("name")?.as_str()?.to_string(), Value::String(pair.get("value")?.as_str()?.to_string())))
+                }).collect();
+                http["http_headers"] = Value::Object(headers);
+            }
+            http
         } else {
             let env: Map<String, Value> = server
                 .get("env")
@@ -985,6 +992,9 @@ mod tests {
         assert_eq!(config["mcp_servers.thingmaker"]["command"], "/bin/thingmaker-mcp");
         assert_eq!(config["mcp_servers.thingmaker"]["env"]["TOKEN"], "t");
         assert_eq!(mcp_config(Some(&json!([]))), None);
+        let web = mcp_config(Some(&json!([{"name":"thingmaker-web","url":"http://127.0.0.1:1234/mcp",
+            "headers":[{"name":"Authorization","value":"Bearer local-test"}]}]))).unwrap();
+        assert_eq!(web["mcp_servers.thingmaker-web"]["http_headers"]["Authorization"], "Bearer local-test");
     }
 
     #[test]
