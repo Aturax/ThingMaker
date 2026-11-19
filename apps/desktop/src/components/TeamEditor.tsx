@@ -11,7 +11,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { EMPTY_COMBO, PROVIDER_LABELS, asConfigOptions, isEffortOption, type Combo, type OrchestratorChoice, type Provider, type TeamPreset, type WorkerSlot } from "@thingmaker/contracts";
-import { useStore } from "../store";
+import { switchesSession, useStore } from "../store";
 import { hasConversation, presetMatches, teamSummary, tidyCombo } from "../team";
 import { closestRole, modelName, type Catalogs } from "../teamRoles";
 import { ProviderLogo } from "./ProviderLogo";
@@ -165,7 +165,7 @@ export function TeamChip({ sessionId, disabled }: { sessionId: string; disabled:
     setOpen(false);
     await saveTeam(sessionId, tidyCombo(preset.combo));
     const lead = preset.orchestrator;
-    if (lead.provider !== provider || (lead.provider === "local" && lead.model?.startsWith("@agent/"))) {
+    if (switchesSession(session, lead)) {
       setPendingProvider(sessionId, { provider: lead.provider, ...(lead.resources ? { resources: lead.resources } : {}), ...(lead.model ? { model: lead.model } : {}), ...(lead.effort ? { effort: lead.effort } : {}) });
       return;
     }
@@ -173,7 +173,7 @@ export function TeamChip({ sessionId, disabled }: { sessionId: string; disabled:
     const options = asConfigOptions(session.snapshot.configOptions);
     const model = options.find((option) => option.configId === "model");
     const effort = options.find((option) => isEffortOption(option.configId));
-    if (model && lead.model && lead.model !== model.currentValue) await setConfigOption(sessionId, model.configId, lead.model);
+    if (!lead.model?.startsWith("@agent/") && model && lead.model && lead.model !== model.currentValue) await setConfigOption(sessionId, model.configId, lead.model);
     if (effort && lead.effort && lead.effort !== effort.currentValue) await setConfigOption(sessionId, effort.configId, lead.effort);
   };
 

@@ -256,6 +256,8 @@ pub fn provider_login_cancel(run_id: String, state: State<'_, AppState>) -> Comm
 pub async fn provider_models(provider: Provider, state: State<'_, AppState>) -> CommandResult<Vec<ProviderModel>> {
     let resolved = state.resolve_provider(provider)?;
     let folder = state.account_folder(provider, None);
+    let local_claude = provider == Provider::Local && state.resolve_provider(Provider::Claude).is_ok();
+    let local_codex = provider == Provider::Local && state.resolve_provider(Provider::Codex).is_ok_and(|tool| tool.program.is_file());
     // The app's own data directory, not a project: asking for the catalog
     // opens a session, and that should leave nothing in the user's workspace.
     let scratch = state.data_dir.join("provider-probe");
@@ -264,8 +266,10 @@ pub async fn provider_models(provider: Provider, state: State<'_, AppState>) -> 
         Provider::Codex => codex::probe::read_models(&resolved.program, folder.as_deref(), Duration::from_secs(45)).map_err(DesktopError::io),
         Provider::Gemini => gemini::probe::read_models(&resolved.program, Duration::from_secs(45)).map_err(DesktopError::io),
         Provider::Local => {
-            let _ = &resolved;
-            thingmaker_supervisor::agents::local::ollama::Ollama::local().models().map(|models| thingmaker_supervisor::agents::local::catalog(&models)).map_err(DesktopError::not_ready)
+            use thingmaker_supervisor::agents::local::{catalog, ollama};
+            let client = ollama::Ollama::local();
+            let codex = local_codex && client.version().is_ok_and(|v| ollama::supports_responses(&v));
+            client.models().map(|models| catalog(&models, local_claude, codex)).map_err(DesktopError::not_ready)
         }
     })
     .await

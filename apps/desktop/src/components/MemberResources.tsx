@@ -19,6 +19,11 @@ export function MemberResources({ worker, onChange, initialWorkspace = "" }: { i
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState<"skills" | "mcps">("skills");
   const localHarness = worker.provider === "local" ? localAgentHarness(worker.model) : undefined;
+  const models = useStore((s) => s.providerModels.local);
+  const loadModels = useStore((s) => s.loadProviderModels);
+  useEffect(() => {
+    if (localHarness && !models) void loadModels("local");
+  }, [localHarness, models, loadModels]);
   const harness = localHarness ?? worker.provider;
   const supported = harness === "claude" || harness === "codex";
   const custom = worker.resources !== undefined;
@@ -53,10 +58,12 @@ export function MemberResources({ worker, onChange, initialWorkspace = "" }: { i
   return (
     <section className="member-resources" aria-label={t("Skills and connections")}>
       <div className="row wrap">
-        {localHarness && <label>Harness <select className="input" value={localHarness} onChange={(event) => onChange({
+        {localHarness && <label>{t("Harness")} <select className="input" value={localHarness} onChange={(event) => onChange({
           ...worker, model: localModelId("agent", parseLocalModel(worker.model).name, event.target.value === "codex" ? "codex" : "claude"),
         })}>
-          <option value="claude">Claude Code</option><option value="codex">Codex</option>
+          {(["claude", "codex"] as const).filter((id) => id === localHarness ||
+            models?.some((model) => model.id === localModelId("agent", parseLocalModel(worker.model).name, id)))
+            .map((id) => <option key={id} value={id}>{id === "codex" ? "Codex" : "Claude Code"}</option>)}
         </select></label>}
         <strong>{t("Skills and connections")}</strong>
         <select className="input" aria-label={t("Resource mode")} value={custom ? "custom" : "inherit"} onChange={(event) => event.target.value === "inherit" ? inherit() : patch({ skills: [], mcps: [] })}>

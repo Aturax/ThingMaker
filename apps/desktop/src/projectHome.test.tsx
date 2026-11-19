@@ -89,7 +89,7 @@ describe("a project's home", () => {
     useStore.setState({
       openSession,
       providers: [{ provider: "local", resolved: {}, auth: { loggedIn: true } }],
-      providerModels: { local: [{ ...localModel, id: "@chat/qwen2.5-coder:7b" }, { ...localModel, id: "@agent/qwen2.5-coder:7b" }] },
+      providerModels: { local: [{ ...localModel, id: "@chat/qwen2.5-coder:7b" }, { ...localModel, id: "@agent/qwen2.5-coder:7b" }, { ...localModel, id: "@agent/@codex/qwen2.5-coder:7b", name: "qwen2.5-coder:7b · Codex" }] },
       loadProviderModels: vi.fn(async () => []),
     } as never);
     render(<WorkspaceView workspaceId="w1" />);

@@ -148,6 +148,13 @@ pub fn base_name(name: &str) -> &str {
     }
 }
 
+/// The non-stateful Responses endpoint was introduced in Ollama 0.13.3.
+pub fn supports_responses(version: &str) -> bool {
+    let mut parts = version.trim().split('.');
+    let mut next = || parts.next().and_then(|part| part.parse::<u64>().ok());
+    matches!((next(), next(), next()), (Some(a), Some(b), Some(c)) if (a, b, c) >= (0, 13, 3)) && parts.next().is_none()
+}
+
 pub struct Ollama {
     base: String,
     client: reqwest::blocking::Client,
@@ -463,6 +470,13 @@ mod tests {
         assert_eq!(client.short_reply("test-model", "instruction", "three messages").unwrap(), "{\"reply\":\"Continue\"}");
         assert!(client.short_reply("model:cloud", "instruction", "three messages").is_err());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn responses_requires_ollama_0_13_3() {
+        for (v, expected) in [("0.13.2",false),("0.13.3",true),("1.0.0",true),("unknown",false)] {
+            assert_eq!(supports_responses(v),expected);
+        }
     }
 
     #[test]

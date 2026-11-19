@@ -24,11 +24,11 @@ fn catalog_for(state: &AppState, root: Option<&Path>) -> CommandResult<ResourceC
     member_resources::catalog_with_homes(home, &folder, &codex_folder, root)
 }
 
-fn check_harness(state: &AppState, provider: Provider, local: bool) -> CommandResult<()> {
+fn check_harness(state: &AppState, provider: Provider) -> CommandResult<()> {
     let resolved = state.resolve_provider(provider)?;
     if provider == Provider::Codex { return Ok(()) }
     let script = resolved.prefix_args.first().ok_or_else(|| DesktopError::not_ready("Claude ACP adapter script is unavailable"))?;
-    member_resources::check_harness(Path::new(script), local)
+    member_resources::check_harness(Path::new(script))
 }
 
 #[tauri::command]
@@ -38,7 +38,7 @@ pub fn member_resources_catalog(workspace_id: Option<String>, provider: Provider
         .map(|record| PathBuf::from(record.canonical_root)).ok_or_else(|| DesktopError::not_ready("Workspace not found"))).transpose()?;
     let catalog = catalog_for(&state, root.as_deref())?.for_provider(provider);
     let local = local.unwrap_or(false);
-    Ok(CatalogView { catalog: if local { catalog.local_only() } else { catalog }, problem: check_harness(&state, provider, local).err().map(|error| error.message) })
+    Ok(CatalogView { catalog: if local { catalog.local_only() } else { catalog }, problem: check_harness(&state, provider).err().map(|error| error.message) })
 }
 
 pub fn resolve(state: &AppState, root: &Path, slot: &WorkerSlot) -> CommandResult<Option<ResolvedResources>> {
@@ -54,7 +54,7 @@ pub fn resolve_for(state: &AppState, root: &Path, provider: Provider, model: Opt
     if selection.skills.len() + selection.mcps.len() > 5000 {
         return Err(DesktopError::limit_exceeded("Too many selected resources"));
     }
-    check_harness(state, harness, provider == Provider::Local)?;
+    check_harness(state, harness)?;
     let catalog = catalog_for(state, Some(root))?.for_provider(harness);
     let catalog = if provider == Provider::Local { catalog.local_only() } else { catalog };
     let environment = super::session::launch_environment(state).resolve(std::env::vars()).into_iter().collect();

@@ -237,7 +237,7 @@ impl AgentLaunch {
             Self::Claude(options) => match &options.local {
                 Some(local) => {
                     let mut env = local.environment();
-                    if options.resources.is_some() {
+                    if options.resources.as_ref().is_some_and(|(skills, mcps)| !skills.is_empty() || !mcps.is_empty()) {
                         env.retain(|(key, _)| key != "CLAUDE_CODE_SIMPLE");
                         env.push(("CLAUDE_CODE_SIMPLE".into(), "0".into()));
                     }

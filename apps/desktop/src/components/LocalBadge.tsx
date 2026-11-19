@@ -27,8 +27,9 @@ export function LocalBadge({ sessionId, localChat, configOptions }: { sessionId:
   const setPending = useStore((s) => s.setPendingProvider);
   const current = asConfigOptions(configOptions).find((option) => option.configId === "model")?.currentValue;
   const name = typeof current === "string" ? current : "";
-  const agent = localModelId("agent", name);
-  const canBeAgent = localChat && name !== "" && (catalog ?? []).some((model) => model.id === agent);
+  const agent = [localModelId("agent", name), localModelId("agent", name, "codex")]
+    .find((id) => catalog?.some((model) => model.id === id));
+  const canBeAgent = localChat && name !== "" && agent !== undefined;
 
   const toAgent = async () => {
     const confirmed = await api.confirmDialog({
@@ -37,7 +38,7 @@ export function LocalBadge({ sessionId, localChat, configOptions }: { sessionId:
       okLabel: t("Continue as an agent"),
       cancelLabel: t("Stay in the chat"),
     });
-    if (confirmed) setPending(sessionId, { provider: "local", model: agent });
+    if (confirmed && agent) setPending(sessionId, { provider: "local", model: agent });
   };
 
   return (

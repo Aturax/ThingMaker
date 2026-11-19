@@ -51,7 +51,7 @@ import type {
   ProviderVersion,
   TurnPhase,
 } from "@thingmaker/contracts";
-import { EMPTY_COMBO, JOB_EVENT, ULTRA_REVIEW_EVENT, type UltraReview, type UrDecision, type UrStartRequest, SESSION_TITLE_EVENT, type SessionTitleChange, ODYSSEY_STATE_NOTE, PROVIDERS, PROVIDER_LABELS, BIGTHING_EVENT, asConfigOptions, ACCOUNT_PROVIDERS, isEffortOption, isRetiredModel, localAgentHarness, parseLocalModel, type AccountView, type Combo, type JobView, type ProviderModel, type BigThingEvent, type BigThingRuntime, type NestedReport, type TeamPreset, type RenameReport, type WipeReport, type WorkerSlot } from "@thingmaker/contracts";
+import { EMPTY_COMBO, JOB_EVENT, ULTRA_REVIEW_EVENT, type UltraReview, type UrDecision, type UrStartRequest, SESSION_TITLE_EVENT, type SessionTitleChange, ODYSSEY_STATE_NOTE, PROVIDERS, PROVIDER_LABELS, BIGTHING_EVENT, asConfigOptions, ACCOUNT_PROVIDERS, isEffortOption, isRetiredModel, localAgentHarness, parseLocalModel, type LocalSessionSetup, type AccountView, type Combo, type JobView, type ProviderModel, type BigThingEvent, type BigThingRuntime, type NestedReport, type TeamPreset, type RenameReport, type WipeReport, type WorkerSlot } from "@thingmaker/contracts";
 import { isLocalChat } from "./localModels";
 import { HANDOFF_SPLIT, handoffBrief, hasConversation, helperPresetFrom, readHelperPresets, readPresets, upsertHelperPreset, upsertJob, upsertPreset, withoutHandoff, type HelperPreset } from "./team";
 import { copiesItself, forkBranch, forkTitle, type ForkPoint } from "./fork";
@@ -113,6 +113,7 @@ export type AppUpdateState = {
 const UPDATE_CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 
 export type LiveSession = {
+  localSetup?: LocalSessionSetup;
   handle: SessionHandle;
   workspaceId: string;
   snapshot: Snapshot;
@@ -861,12 +862,14 @@ async function stopIdleSessions(get: Get, set: Set): Promise<void> {
   }
 }
 
-async function attachLive(get: Get, set: Set, handle: SessionHandle, workspaceId: string, focus: boolean): Promise<void> {
+async function attachLive(get: Get, set: Set, handle: SessionHandle, workspaceId: string, focus: boolean, localSetup?: LocalSessionSetup): Promise<void> {
   const snapshot = await api.sessionSnapshot(handle);
   const projection = projectionFromSnapshot(snapshot);
   const id = handle.id;
   const existing = get().sessions[id];
+  const setup = localSetup ?? existing?.localSetup;
   const live: LiveSession = {
+    ...(setup ? { localSetup: setup } : {}),
     handle,
     workspaceId,
     snapshot,
@@ -972,11 +975,20 @@ async function attachLive(get: Get, set: Set, handle: SessionHandle, workspaceId
  * provider, or a local chat becoming a local agent (or back), which run as
  * different programs.
  */
-function switchesSession(snapshot: { provider?: Provider; capabilities?: { agentName?: string } | null } | undefined, pending: PendingProvider): boolean {
+export function switchesSession(session: { snapshot: Parameters<typeof isLocalChat>[0]; localSetup?: LocalSessionSetup } | undefined, pending: PendingProvider): boolean {
+  const snapshot = session?.snapshot;
   if (!snapshot || pending.provider !== snapshot.provider) return true;
   if (pending.provider !== "local" || !pending.model) return false;
   const harness = localAgentHarness(pending.model);
-  if (harness && !isLocalChat(snapshot)) return true;
+  if (harness && !isLocalChat(snapshot)) {
+    const current = session?.localSetup;
+    if (!current || current.model !== pending.model) return true;
+    return (["skills", "mcps"] as const).some((key) => {
+      const active = new Set(current.resources?.[key]);
+      const desired = new Set(pending.resources?.[key]);
+      return active.size !== desired.size || [...active].some((id) => !desired.has(id));
+    });
+  }
   return parseLocalModel(pending.model).kind !== (isLocalChat(snapshot) ? "chat" : "agent");
 }
 
@@ -1772,7 +1784,7 @@ export const useStore = create<State>((set, get) => ({
         void api
           .sessionListOpen()
           .then((open) => open.find((entry) => entry.handle.id === event.handle))
-          .then((entry) => (entry && !get().sessions[event.handle] ? attachLive(get, set, entry.handle, event.workspaceId, false) : undefined))
+          .then((entry) => (entry && !get().sessions[event.handle] ? attachLive(get, set, entry.handle, event.workspaceId, false, entry.localSetup) : undefined))
           .catch(() => undefined);
         return;
       }
@@ -2007,7 +2019,7 @@ export const useStore = create<State>((set, get) => ({
       const workspaceId = entry.workspaceId ?? get().workspaces.find((w) => w.canonicalRoot === entry.root)?.id;
       if (!workspaceId) continue;
       try {
-        await attachLive(get, set, entry.handle, workspaceId, false);
+        await attachLive(get, set, entry.handle, workspaceId, false, entry.localSetup);
       } catch (error) {
         set({ error: asError(error) });
       }
@@ -2400,7 +2412,7 @@ export const useStore = create<State>((set, get) => ({
       try {
         const running = (await api.sessionListOpen()).find((entry) => entry.agentSessionId === mode.session_id);
         if (running) {
-          await attachLive(get, set, running.handle, workspaceId, false);
+          await attachLive(get, set, running.handle, workspaceId, false, running.localSetup);
           settle(running.handle.id);
           return;
         }
@@ -2421,7 +2433,7 @@ export const useStore = create<State>((set, get) => ({
       });
       // Keep the preparation view visible through snapshot, subscription and
       // history loading. A half-attached session otherwise looks like a blank chat.
-      await attachLive(get, set, opened.handle, workspaceId, false);
+      await attachLive(get, set, opened.handle, workspaceId, false, opened.localSetup);
       settle(opened.handle.id);
     } catch (error) {
       const desktopError = asError(error);
@@ -2446,7 +2458,7 @@ export const useStore = create<State>((set, get) => ({
   async openSessionFor(workspaceId, provider, combo) {
     try {
       const opened = await api.sessionOpen({ workspaceId, mode: { mode: "new" }, provider, ...launchDefaults(get().sessionDefaults, provider), ...(combo ? { combo } : {}) });
-      await attachLive(get, set, opened.handle, workspaceId, false);
+      await attachLive(get, set, opened.handle, workspaceId, false, opened.localSetup);
       const live = get().sessions[opened.handle.id];
       const agentSessionId = live?.snapshot.agentSessionId ?? opened.snapshot.agentSessionId ?? null;
       return agentSessionId ? { key: opened.handle.id, agentSessionId } : null;
@@ -2531,7 +2543,7 @@ export const useStore = create<State>((set, get) => ({
           void api
             .sessionListOpen()
             .then((open) => open.find((entry) => entry.handle.id === handleId))
-            .then((entry) => (entry && !get().sessions[handleId] ? attachLive(get, set, entry.handle, workspaceId, false) : undefined))
+            .then((entry) => (entry && !get().sessions[handleId] ? attachLive(get, set, entry.handle, workspaceId, false, entry.localSetup) : undefined))
             .catch(() => undefined);
         }
       }
@@ -2647,7 +2659,7 @@ export const useStore = create<State>((set, get) => ({
           set({ error: { code: "NOT_READY", message: t("This worker has stopped. Its transcript is in the sidebar under its orchestrator."), retry: "user_action" } });
           return;
         }
-        await attachLive(get, set, entry.handle, workspaceId, true);
+        await attachLive(get, set, entry.handle, workspaceId, true, entry.localSetup);
         return;
       } catch (error) {
         set({ error: asError(error) });
@@ -2674,7 +2686,7 @@ export const useStore = create<State>((set, get) => ({
           ...(preset.orchestrator.effort ? { reasoningEffort: preset.orchestrator.effort } : {}),
           combo: preset.combo,
         });
-        await attachLive(get, set, opened.handle, session.workspaceId, false);
+        await attachLive(get, set, opened.handle, session.workspaceId, false, opened.localSetup);
         key = opened.handle.id;
       } catch (error) {
         set({ error: asError(error) });
@@ -2726,7 +2738,7 @@ export const useStore = create<State>((set, get) => ({
       const opened = copies
         ? await api.sessionOpen({ ...launch, mode: { mode: "fork", session_id: agentSessionId }, ...(provider === "claude" && point?.at ? { forkAt: point.at } : {}) })
         : await api.sessionOpen({ ...launch, mode: { mode: "new" } });
-      await attachLive(get, set, opened.handle, target, false);
+      await attachLive(get, set, opened.handle, target, false, opened.localSetup);
       const key = opened.handle.id;
       const forked = get().sessions[key]?.snapshot.agentSessionId ?? opened.snapshot.agentSessionId;
       if (!forked) throw new Error(t("The agent did not name the new session."));
@@ -2781,7 +2793,7 @@ export const useStore = create<State>((set, get) => ({
 
   setPendingProvider(sessionId, pending) {
     const { [sessionId]: _previous, ...rest } = get().pendingProvider;
-    set({ pendingProvider: pending && switchesSession(get().sessions[sessionId]?.snapshot, pending) ? { ...rest, [sessionId]: pending } : rest });
+    set({ pendingProvider: pending && switchesSession(get().sessions[sessionId], pending) ? { ...rest, [sessionId]: pending } : rest });
   },
 
   async loadContinuations() {
@@ -2825,7 +2837,7 @@ export const useStore = create<State>((set, get) => ({
         ...(pending.effort ? { reasoningEffort: pending.effort } : {}),
         ...(team ? { combo: team } : {}),
       });
-      await attachLive(get, set, opened.handle, session.workspaceId, false);
+      await attachLive(get, set, opened.handle, session.workspaceId, false, opened.localSetup);
       const key = opened.handle.id;
       const live = get().sessions[key];
       const agentSessionId = live?.snapshot.agentSessionId ?? opened.snapshot.agentSessionId ?? null;
@@ -2988,12 +3000,12 @@ export const useStore = create<State>((set, get) => ({
   async applyPresetToSession(sessionId, preset) {
     const session = get().sessions[sessionId];
     if (!session) return "applied";
-    if (preset.orchestrator.provider !== session.snapshot.provider || (preset.orchestrator.provider === "local" && localAgentHarness(preset.orchestrator.model))) return "needs_handoff";
+    if (switchesSession(session, preset.orchestrator)) return "needs_handoff";
     await get().saveTeam(sessionId, preset.combo);
     const options = asConfigOptions(session.snapshot.configOptions);
     const model = options.find((option) => option.configId === "model");
     const effort = options.find((option) => isEffortOption(option.configId));
-    if (preset.orchestrator.model && model && model.currentValue !== preset.orchestrator.model) {
+    if (!localAgentHarness(preset.orchestrator.model) && preset.orchestrator.model && model && model.currentValue !== preset.orchestrator.model) {
       await get().setConfigOption(sessionId, model.configId, preset.orchestrator.model);
     }
     if (preset.orchestrator.effort && effort && effort.currentValue !== preset.orchestrator.effort) {
@@ -3015,7 +3027,7 @@ export const useStore = create<State>((set, get) => ({
 
   async send(sessionId) {
     const pending = get().pendingProvider[sessionId];
-    if (pending && switchesSession(get().sessions[sessionId]?.snapshot, pending)) return get().continueOnProvider(sessionId);
+    if (pending && switchesSession(get().sessions[sessionId], pending)) return get().continueOnProvider(sessionId);
     const session = get().sessions[sessionId];
     const draft = get().drafts[sessionId] ?? "";
     const attachments = get().attachments[sessionId] ?? [];

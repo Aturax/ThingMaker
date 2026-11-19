@@ -52,15 +52,24 @@ pub struct ResourceEntry {
 pub struct ResourceCatalog {
     pub entries: Vec<ResourceEntry>,
     pub notes: Vec<String>,
+    #[serde(skip)]
+    local_only: bool,
+}
+
+fn local_endpoint(config: &Value) -> bool {
+    match config.get("url") {
+        None => config["command"].is_string(),
+        Some(endpoint) => endpoint.as_str().and_then(|url| reqwest::Url::parse(url).ok()).is_some_and(|url|
+            matches!(url.scheme(), "http" | "https") && url.host_str().is_some_and(|host|
+                host == "localhost" || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback()))),
+    }
 }
 
 impl ResourceCatalog {
     pub fn local_only(mut self) -> Self {
+        self.local_only = true;
         for entry in self.entries.iter_mut().filter(|entry| entry.available && entry.kind == "mcp") {
-            if let Some(endpoint) = entry.config["url"].as_str()
-                && let Ok(url) = reqwest::Url::parse(endpoint)
-                && !url.host_str().is_some_and(|host| host == "localhost" || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback()))
-            {
+            if !local_endpoint(&entry.config) {
                 entry.available = false;
                 entry.problem = Some("Local agents can only reach MCP servers on this computer".into());
             }
@@ -367,7 +376,7 @@ pub fn catalog_with_homes(home: &Path, config_dir: &Path, codex_home: &Path, roo
     }
     entries.sort_by(|a, b| a.id.cmp(&b.id));
     skill_dependencies::annotate(&mut entries);
-    Ok(ResourceCatalog { entries, notes: vec![
+    Ok(ResourceCatalog { entries, local_only: false, notes: vec![
         "Shared skills: .claude, .agents and .codex folders, plus installed Claude plugins. Legacy commands, enterprise/synced skills and cloud connectors are not listed. Skills may depend on tools or syntax specific to their original harness.".into(),
         "Selection controls model-invoked skills and MCP servers. File access, slash commands, plugin hooks and managed policies are separate.".into(),
     ] })
@@ -548,6 +557,9 @@ pub fn resolve(catalog: &ResourceCatalog, selection: &ResourceSelection, environ
             else {
                 let mut config = entry.config.clone();
                 expand_environment(&mut config, environment)?;
+                if catalog.local_only && !local_endpoint(&config) {
+                    return Err(DesktopError::not_ready("Local agents can only reach MCP servers on this computer"));
+                }
                 if mcps.insert(entry.runtime_name.clone(), config).is_some() {
                     return Err(DesktopError::conflict("Two selected MCP definitions use the same server name. Select one origin for that server."));
                 }
@@ -586,9 +598,9 @@ fn expand_environment(value: &mut Value, env: &HashMap<String, String>) -> Resul
 
 /// Fail closed on older installations: this pilot was verified with these
 /// adapter/SDK versions, rather than assuming unknown versions honor options.
-pub fn check_harness(adapter_script: &Path, local: bool) -> Result<(), DesktopError> {
+pub fn check_harness(adapter_script: &Path) -> Result<(), DesktopError> {
     let package = adapter_script.parent().and_then(Path::parent).ok_or_else(|| DesktopError::not_ready("Cannot locate Claude ACP package"))?;
-    let (adapter, sdk) = if local { ((0, 85, 1), (0, 3, 286)) } else { ((0, 106, 0), (0, 3, 322)) };
+    let (adapter, sdk) = ((0, 106, 0), (0, 3, 322));
     for (file, minimum) in [(package.join("package.json"), adapter), (package.join("node_modules/@anthropic-ai/claude-agent-sdk/package.json"), sdk)] {
         let value = read(&file)?;
         let version = value["version"].as_str().unwrap_or("");
@@ -704,13 +716,29 @@ mod tests {
     }
 
     #[test]
+    fn local_endpoints_fail_closed_before_and_after_expansion() {
+        let temp = tempfile::tempdir().unwrap();
+        write(&temp.path().join(".claude.json"), r#"{"mcpServers":{"var":{"type":"http","url":"${MCP_URL}"},"bad":{"type":"http","url":"invalid"},"loop":{"type":"http","url":"http://localhost/${PATH}"}}}"#);
+        let mut catalog = catalog(temp.path(), &temp.path().join(".claude"), None).unwrap().local_only();
+        for name in ["var","bad"] {
+            assert!(!catalog.entries.iter().find(|e| e.id == format!("mcp:user:{name}")).unwrap().available);
+        }
+        // Resolution validates the final definition independently of the catalog preview.
+        let entry = catalog.entries.iter_mut().find(|e| e.id == "mcp:user:loop").unwrap();
+        entry.config["url"] = json!("${MCP_URL}");
+        let selection = ResourceSelection { skills: vec![], mcps: vec![entry.id.clone()] };
+        let vars = HashMap::from([("MCP_URL".into(), "https://example.com".into())]);
+        assert!(resolve(&catalog, &selection, &vars).is_err());
+    }
+
+    #[test]
     fn missing_or_old_harness_is_rejected_before_launch() {
         let temp = tempfile::tempdir().unwrap();
         let script = temp.path().join("dist/index.js");
-        assert!(check_harness(&script, false).is_err());
+        assert!(check_harness(&script).is_err());
         write(&temp.path().join("package.json"), r#"{"version":"0.106.0"}"#);
         write(&temp.path().join("node_modules/@anthropic-ai/claude-agent-sdk/package.json"), r#"{"version":"0.3.322"}"#);
-        assert!(check_harness(&script, false).is_ok());
+        assert!(check_harness(&script).is_ok());
     }
 
     #[test]

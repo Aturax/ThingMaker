@@ -59,6 +59,7 @@ it.each([["@agent/gemma", "claude"], ["@agent/@codex/gemma", "codex"]])("loads t
 });
 
 it("changes a local agent's harness without losing its model or selected resources", async () => {
+  useStore.setState({ providerModels: { local: [{ id: "@agent/library/gemma:12b" }, { id: "@agent/@codex/library/gemma:12b" }] } } as never);
   render(<Editor worker={{ ...initial, provider: "local", model: "@agent/library/gemma:12b", resources: { skills: ["skill:user:art"], mcps: [] } }} />);
   await screen.findByRole("checkbox", { name: "art" });
   fireEvent.change(screen.getByLabelText("Harness"), { target: { value: "codex" } });

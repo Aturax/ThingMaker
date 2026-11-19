@@ -1353,7 +1353,7 @@ export type TerminalEvent = { type: "output"; dataBase64: string } | { type: "ex
 
 export type TerminalOpened = { info: TerminalInfo; workspaceId: string; environmentNote: string };
 
-export type OpenSessionEntry = { handle: SessionHandle; workspaceId: string | null; root: string; agentSessionId: string; /** The main session's handle, for a side session. */ sideOf?: string };
+export type OpenSessionEntry = { localSetup?: LocalSessionSetup; handle: SessionHandle; workspaceId: string | null; root: string; agentSessionId: string; /** The main session's handle, for a side session. */ sideOf?: string };
 
 export type OutboxRecord = {
   requestId: string;
@@ -1731,7 +1731,8 @@ export type LoginEvent =
   | { type: "url"; url: string }
   | { type: "exited"; status: number | null; success: boolean; cancelled: boolean; timedOut: boolean };
 
-export type OpenResponse = { handle: SessionHandle; desktopSessionId: string; snapshot: Snapshot };
+export type LocalSessionSetup = { model: string; resources?: MemberResourceSelection | null };
+export type OpenResponse = { localSetup?: LocalSessionSetup; handle: SessionHandle; desktopSessionId: string; snapshot: Snapshot };
 
 /** A locally connected device whose screen can be previewed read-only. */
 export type ScreenDevice = { id: string; name: string; platform: "android" | "ios" };

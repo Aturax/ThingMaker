@@ -47,7 +47,7 @@ pub struct CodexLaunchOptions {
     pub resources: Option<CodexResources>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CodexResources {
     pub skills: Vec<PathBuf>,
     pub mcps: std::collections::BTreeMap<String, Value>,
@@ -78,6 +78,7 @@ impl CodexLaunchOptions {
                 "-c".into(), "model_providers.thingmaker_local.wire_api=\"responses\"".into(),
                 "-c".into(), format!("model_providers.thingmaker_local.base_url={}", json!(format!("{}/v1", crate::agents::local::ollama::address().trim_end_matches('/')))),
                 "-c".into(), "web_search=\"disabled\"".into(),
+                "-c".into(), "project_doc_max_bytes=0".into(),
                 "-c".into(), "analytics.enabled=false".into(), "app-server".into()];
         }
         vec!["app-server".into()]
@@ -122,6 +123,12 @@ mod tests {
     fn local_codex_disables_provider_hosted_search() {
         let mut options = CodexLaunchOptions::new("/work", "codex");
         options.local = true;
+        options.codex_home = Some(PathBuf::from("isolated").join("local-models/codex"));
+        let args = options.arguments();
+        assert!(args.contains(&"project_doc_max_bytes=0".to_owned()));
+        assert!(args.contains(&"model_providers.thingmaker_local.wire_api=\"responses\"".to_owned()));
+        let env = crate::agents::AgentLaunch::Codex(options.clone()).environment();
+        assert!(env.contains(&("CODEX_HOME".into(), options.codex_home.as_ref().unwrap().to_string_lossy().into_owned())));
         assert!(options.arguments().windows(2).any(|pair| pair == ["-c", "web_search=\"disabled\""]));
     }
 

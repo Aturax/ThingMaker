@@ -56,6 +56,7 @@ export const local: Record<string, string> = {
   "Fits": "Cabe",
   "Tight": "Justo",
   "Too big": "Demasiado grande",
+  "Harness": "Motor del agente",
   "Continue as an agent?": "¿Seguir como agente?",
   "Your next message starts an agent on {model}, with this conversation carried over. Unlike a chat, an agent can read and change files in this folder. It runs in a sandbox that reaches only this computer.": "Tu próximo mensaje inicia un agente con {model} y se lleva esta conversación. A diferencia de un chat, un agente puede leer y cambiar archivos de esta carpeta. Funciona en un entorno aislado que solo llega a este ordenador.",
   "Continue as an agent": "Seguir como agente",

@@ -15,6 +15,7 @@ use thingmaker_supervisor::{
     DecimalId, DesktopError, SessionHandle,
     acp::{LaunchTarget, SessionId},
     delegation::Combo,
+    integrations::member_resources::ResourceSelection,
     agents::{
         PermissionStance, Provider,
         claude::launch::{CLAUDE_ORCHESTRATOR_EFFORT, CLAUDE_ORCHESTRATOR_FALLBACK, CLAUDE_ORCHESTRATOR_MODEL, ClaudeLaunchOptions},
@@ -59,7 +60,7 @@ pub struct OpenRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
-    pub resources: Option<thingmaker_supervisor::integrations::member_resources::ResourceSelection>,
+    pub resources: Option<ResourceSelection>,
     /// The team this session starts with. `None` keeps the one it had, or
     /// the user's default.
     #[serde(default)]
@@ -74,10 +75,20 @@ pub struct OpenRequest {
     pub fork_at: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+
+#[derive(Debug, Serialize, Deserialize)]
 pub(super) struct LocalSessionSetup {
     pub model: String,
-    pub resources: Option<thingmaker_supervisor::integrations::member_resources::ResourceSelection>,
+    pub resources: Option<ResourceSelection>,
+}
+
+impl LocalSessionSetup {
+    fn restore(saved: Option<Self>, model: Option<String>, resources: Option<ResourceSelection>) -> (Option<String>, Option<ResourceSelection>) {
+        match saved {
+            Some(saved) => (Some(saved.model), saved.resources),
+            None => (model, resources),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -85,6 +96,8 @@ pub(super) struct LocalSessionSetup {
 pub struct OpenResponse {
     pub handle: SessionHandle,
     pub desktop_session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_setup: Option<LocalSessionSetup>,
     pub snapshot: Snapshot,
 }
 
@@ -252,6 +265,11 @@ fn local_launch(
         }
         LocalKind::Agent if local::agent_harness(&id) == Some(Provider::Codex) => {
             let binary = state.resolve_provider(Provider::Codex)?.program;
+            let version = std::thread::spawn(|| local::ollama::Ollama::local().version()).join()
+                .map_err(|_| DesktopError::not_ready("Ollama version check stopped"))?.map_err(DesktopError::not_ready)?;
+            if !local::ollama::supports_responses(&version) {
+                return Err(DesktopError::not_ready("Local Codex requires Ollama 0.13.3 or newer"));
+            }
             let served = local::prepare_agent_model(&name, window).map_err(DesktopError::not_ready)?;
             let codex_home = home.join("codex");
             std::fs::create_dir_all(&codex_home).map_err(|error| DesktopError::io(error.to_string()))?;
@@ -260,6 +278,7 @@ fn local_launch(
             let (program, prefix_args) = sandbox::wrap(&binary, &[]).map_err(DesktopError::unsupported)?;
             let mut options = CodexLaunchOptions::new(root, binary);
             options.local = true;
+            options.resources = Some(Default::default());
             options.codex_home = Some(codex_home);
             options.reserved = reserved;
             options.resume = resume;
@@ -381,10 +400,7 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
     let saved = if provider == Provider::Local {
         recorded.as_ref().map(|row| state.with_storage(|s| s.setting_get::<LocalSessionSetup>("localSessionSetup", &row.id))).transpose().map_err(storage_error)?.flatten()
     } else { None };
-    let (model, selection) = match saved {
-        Some(saved) => (Some(saved.model), saved.resources),
-        None => (model, request.resources.clone()),
-    };
+    let (model, selection) = LocalSessionSetup::restore(saved, model, request.resources.clone());
     let resolved = super::member_resources::resolve_for(&state, Path::new(&record.canonical_root), provider, model.as_deref(), selection.as_ref())?;
     let opened_model = model.clone();
     let (target, mut launch) = build_launch(&state, &record, provider, model, effort, resume, session_id.clone())?;
@@ -447,9 +463,10 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
     let desktop_session = state
         .with_storage(|storage| storage.session_upsert(&record.id, &recorded_id, origin, provider))
         .map_err(storage_error)?;
-    if provider == Provider::Local && let Some(model) = opened_model.as_ref() {
-        let setup = LocalSessionSetup { model: model.clone(), resources: selection };
-        state.with_storage(|s| s.setting_set("localSessionSetup", &desktop_session.id, &setup)).map_err(storage_error)?;
+    let local_setup = opened_model.as_ref().filter(|_| provider == Provider::Local)
+        .map(|model| LocalSessionSetup { model: model.clone(), resources: selection });
+    if let Some(setup) = &local_setup {
+        state.with_storage(|s| s.setting_set("localSessionSetup", &desktop_session.id, setup)).map_err(storage_error)?;
     }
     // A fork is listed under the session it was copied from.
     if request.side_of.is_none()
@@ -507,6 +524,7 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
     Ok(OpenResponse {
         handle,
         desktop_session_id: desktop_session.id,
+        local_setup,
         snapshot,
     })
 }
@@ -974,6 +992,8 @@ fn load_session_records(state: &AppState, workspace_id: &str) -> CommandResult<V
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenSessionEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_setup: Option<LocalSessionSetup>,
     pub handle: SessionHandle,
     pub workspace_id: Option<String>,
     pub root: String,
@@ -999,7 +1019,12 @@ pub fn session_list_open(state: State<'_, AppState>) -> Vec<OpenSessionEntry> {
                 .flatten()
                 .map(|w| w.id);
             let side_of = state.engine.get().and_then(|engine| engine.side_main(&id));
-            Some(OpenSessionEntry { handle: actor.handle().clone(), workspace_id, root: root.to_string_lossy().into_owned(), agent_session_id: state.agent_session_id(&id), side_of })
+            let agent_session_id = state.agent_session_id(&id);
+            let local_setup = workspace_id.as_deref().and_then(|workspace| state.with_storage(|s| {
+                let Some(record) = s.session_by_agent_id(workspace, &agent_session_id)? else { return Ok(None) };
+                if record.provider == Provider::Local { s.setting_get("localSessionSetup", &record.id) } else { Ok(None) }
+            }).ok().flatten());
+            Some(OpenSessionEntry { handle: actor.handle().clone(), workspace_id, root: root.to_string_lossy().into_owned(), agent_session_id, side_of, local_setup })
         })
         .collect()
 }
@@ -1166,6 +1191,61 @@ pub fn session_token_usage(request: TokenUsageRequest, state: State<'_, AppState
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires a Mac, Codex CLI and an installed tool-capable THINGMAKER_LOCAL_TEST_MODEL"]
+    async fn local_codex_executes_a_shell_command_under_the_macos_sandbox() {
+        use thingmaker_supervisor::{acp::SessionUpdate, supervisor::{SessionEvent, TurnEffect}};
+        assert!(cfg!(target_os = "macos"), "run this check on macOS");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let workspace = root.join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let marker = uuid::Uuid::new_v4().to_string();
+        std::fs::write(workspace.join("probe.txt"), &marker).unwrap();
+        let state = AppState::initialize(&root.join("data"), None).unwrap();
+        let path = workspace.to_str().unwrap();
+        let record = state.with_storage(|s| {
+            let row = s.workspace_upsert(path, path, "probe")?;
+            s.workspace_set_trust(&row.id, TrustState::TrustedLocal, None)
+        }).unwrap();
+        let model = std::env::var("THINGMAKER_LOCAL_TEST_MODEL").expect("name of an installed Ollama model");
+        let (target, launch) = build_launch(&state, &record, Provider::Local, Some(format!("@agent/@codex/{model}")), None, None, SessionId::reserve()).unwrap();
+        let program = program_of(&target, &launch);
+        let mut config = SessionActorConfig::new(target, launch);
+        config.environment = launch_environment(&state).with_program_dir(&program);
+        let actor = SessionActor::open(config).await.unwrap();
+        let mut events = actor.subscribe();
+        actor.submit_text("shell-probe", "Run /bin/cat probe.txt using the shell tool and report its output.").await.unwrap();
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(180), async {
+            while let Some(event) = events.recv().await {
+                match &event.payload {
+                    SessionEvent::Update(SessionUpdate::ToolCall(patch) | SessionUpdate::ToolCallUpdate(patch)) => {
+                        if patch.raw_output.as_ref().is_some_and(|out| out["exitCode"] == 0 && out["output"].as_str().is_some_and(|s| s.contains(&marker))) {
+                            return true;
+                        }
+                    }
+                    SessionEvent::Turn(TurnEffect::Settled { .. }) => break,
+                    _ => {}
+                }
+            }
+            false
+        }).await;
+        actor.stop().await.unwrap();
+        assert_eq!(observed.ok(), Some(true), "Codex did not return the fixture from a successful command");
+    }
+
+    #[test]
+    fn resume_restores_the_saved_local_harness_and_selected_resources() {
+        let db = thingmaker_supervisor::storage::Storage::open_in_memory().unwrap();
+        let selection = ResourceSelection { skills: vec!["skill:user:art".into()], mcps: vec![] };
+        let setup = LocalSessionSetup { model: "@agent/@codex/gemma".into(), resources: Some(selection.clone()) };
+        db.setting_set("localSessionSetup", "row", &setup).unwrap();
+        let saved = db.setting_get("localSessionSetup", "row").unwrap();
+        let current = Some("@agent/default".into());
+        assert_eq!(LocalSessionSetup::restore(saved,current.clone(),None), (Some(setup.model),Some(selection)));
+        assert_eq!(LocalSessionSetup::restore(None,current.clone(),None), (current,None));
+    }
 
     #[test]
     fn listing_recovers_existing_transcripts_but_preserves_archives_and_missing_files() {

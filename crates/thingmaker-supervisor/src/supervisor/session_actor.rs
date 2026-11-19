@@ -121,6 +121,9 @@ pub struct SessionActorConfig {
     pub before_prompt: Option<BeforePrompt>,
     /// Keeps generated skill-only plugins alive for this actor's lifetime.
     pub resource_files: Option<Arc<tempfile::TempDir>>,
+    /// Dropping the last actor configuration closes its local team endpoint.
+    #[cfg(windows)]
+    pub local_team_lifetime: Option<Arc<tokio::sync::oneshot::Sender<()>>>,
     /// Closing the control pipe stops the Windows stdio bridge and its children.
     pub local_mcp_bridge: Option<Arc<tokio::process::ChildStdin>>,
 }
@@ -143,6 +146,8 @@ impl SessionActorConfig {
             fork_at: None,
             before_prompt: None,
             resource_files: None,
+            #[cfg(windows)]
+            local_team_lifetime: None,
             local_mcp_bridge: None,
         }
     }
