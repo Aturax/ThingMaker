@@ -1,12 +1,7 @@
-//! Commands an agent left running in the background — Claude Code's Bash with
-//! `run_in_background` — followed through the file their output goes to.
-//!
-//! Claude Code reports such a command once, as a tool result naming its task
-//! and its output file, and then tells an ACP client nothing more until it
-//! starts a turn of its own about it. What it does keep writing is the file:
-//! the command's output, then one last line saying how it ended
-//! (`[exited with code 0]`, `[killed]`, `[timed out after 10 minutes]`, …).
-//! That line is what ends a task here; nothing is inferred from silence.
+//! Background commands followed through provider lifecycle events, with an
+//! output-file fallback for older Claude adapters. Native task state and stop
+//! controls do not depend on platform-specific temporary paths.
+
 
 use std::{
     fs::File,
@@ -45,6 +40,11 @@ pub struct BackgroundTask {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_path: Option<String>,
+    /// The provider offers an individual stop control for this task.
+    pub can_stop: bool,
+    /// Native state is authoritative even for tasks without a stop control.
+    #[serde(skip)]
+    pub native_lifecycle: bool,
     pub state: BackgroundTaskState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i64>,
@@ -54,6 +54,42 @@ pub struct BackgroundTask {
     pub started_at_unix_ms: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at_unix_ms: Option<i64>,
+}
+
+/// Native lifecycle edges are independent of temporary-file layout (notably
+/// Windows/Git Bash paths). A late tool result or progress edge cannot reopen
+/// a terminal task; a terminal provider edge can correct file-based inference.
+pub fn native_update(raw: &Value, tasks: &std::collections::BTreeMap<String, BackgroundTask>, now: i64) -> Option<BackgroundTask> {
+    let id = raw.get("asyncTaskId")?.as_str()?.trim();
+    if id.is_empty() { return None; }
+    let mut task = tasks.get(id).cloned().unwrap_or_else(|| BackgroundTask {
+        task_id: id.into(), tool_call_id: String::new(), command: None,
+        description: None, output_path: None, can_stop: false, native_lifecycle: true,
+        state: BackgroundTaskState::Running, exit_code: None, ending: None,
+        started_at_unix_ms: now, ended_at_unix_ms: None,
+    });
+    task.native_lifecycle = true;
+    if let Some(value) = raw.get("toolCallId").and_then(Value::as_str) { task.tool_call_id = value.into(); }
+    if let Some(value) = raw.get("description").and_then(Value::as_str) { task.description = Some(value.into()); }
+    if let Some(value) = raw.get("outputFilePath").and_then(Value::as_str) { task.output_path = Some(value.into()); }
+    if let Some(value) = raw.get("canStop").and_then(Value::as_bool) { task.can_stop = value; }
+    if raw.get("sessionUpdate").and_then(Value::as_str) == Some("async_task_state_update") {
+        let state = match raw.get("state").and_then(Value::as_str)? {
+            "running" => BackgroundTaskState::Running,
+            "completed" => BackgroundTaskState::Completed,
+            "failed" => BackgroundTaskState::Failed,
+            "stopped" => BackgroundTaskState::Stopped,
+            _ => return None,
+        };
+        if state != BackgroundTaskState::Running {
+            if task.state != state || task.ended_at_unix_ms.is_none() {
+                task.ended_at_unix_ms = Some(now);
+            }
+            task.state = state;
+            task.ending = raw.get("summary").and_then(Value::as_str).map(str::to_string);
+        }
+    }
+    Some(task)
 }
 
 const SPAWNED: &str = "Command running in background with ID: ";
@@ -149,14 +185,25 @@ pub fn ending(tail: &str) -> Option<(BackgroundTaskState, Option<i64>, String)> 
 /// `tasks` folder of Claude Code's own folder under the temporary directory.
 /// The path comes from the agent's text, so nothing else is read through it.
 pub fn is_task_output(path: &Path) -> bool {
-    let Ok(real) = path.canonicalize() else { return false };
-    if real.extension().and_then(|ext| ext.to_str()) != Some("output") || real.parent().and_then(|parent| parent.file_name()).and_then(|name| name.to_str()) != Some("tasks") {
+    path.canonicalize().is_ok_and(|real| possible_task_output(&real))
+}
+
+pub fn possible_task_output(path: &Path) -> bool {
+    if !path.is_absolute() || path.components().any(|part| part == Component::ParentDir)
+        || path.extension().is_none_or(|ext| ext != "output")
+        || path.parent().and_then(Path::file_name).is_none_or(|name| name != "tasks") {
         return false;
     }
-    let temps = [Path::new("/tmp").canonicalize().ok(), Path::new("/private/tmp").canonicalize().ok(), std::env::temp_dir().canonicalize().ok()];
-    temps.iter().flatten().any(|temp| {
-        real.strip_prefix(temp).ok().and_then(|inside| inside.components().next()).is_some_and(|first| matches!(first, Component::Normal(name) if name.to_string_lossy().starts_with("claude-")))
-    })
+    let temp = std::env::temp_dir();
+    [temp.as_path(), Path::new("/tmp"), Path::new("/private/tmp")].into_iter()
+        .filter(|root| root.is_absolute())
+        .any(|root| {
+            let canonical = root.canonicalize().ok();
+            [Some(root), canonical.as_deref()].into_iter().flatten().any(|root| {
+                path.strip_prefix(root).ok().and_then(|inside| inside.components().next())
+                    .is_some_and(|first| matches!(first, Component::Normal(name) if name == "claude" || name.to_string_lossy().starts_with("claude-")))
+            })
+        })
 }
 
 /// The file's length, and at most its last `limit` bytes as text, starting
@@ -210,6 +257,27 @@ mod tests {
     }
 
     #[test]
+    fn native_lifecycle_finishes_without_reading_windows_output_paths() {
+        let mut tasks = std::collections::BTreeMap::new();
+        let spawn = json!({"sessionUpdate": "async_task_spawned", "asyncTaskId": "win-task", "toolCallId": "bash1", "canStop": true, "outputFilePath": r"C:\Users\test\AppData\Local\Temp\claude\tasks\win-task.output"});
+        let task = native_update(&spawn, &tasks, 100).unwrap();
+        assert!(task.can_stop);
+        tasks.insert(task.task_id.clone(), task);
+        let end = json!({"sessionUpdate": "async_task_state_update", "asyncTaskId": "win-task", "state": "completed", "summary": "done"});
+        let task = native_update(&end, &tasks, 200).unwrap();
+        assert_eq!(task.state, BackgroundTaskState::Completed);
+        assert_eq!(task.started_at_unix_ms, 100);
+        assert_eq!(task.ended_at_unix_ms, Some(200));
+        tasks.insert(task.task_id.clone(), task);
+        // Late spawn/progress cannot put a finished task back in running.
+        assert_eq!(native_update(&spawn, &tasks, 300).unwrap().state, BackgroundTaskState::Completed);
+        for state in ["failed", "stopped"] {
+            let edge = json!({"sessionUpdate": "async_task_state_update", "asyncTaskId": "win-task", "state": state});
+            assert_ne!(native_update(&edge, &tasks, 400).unwrap().state, BackgroundTaskState::Running);
+        }
+    }
+
+    #[test]
     fn the_last_line_says_how_it_ended() {
         assert_eq!(ending("BG-DONE\n\n[exited with code 0]\n"), Some((BackgroundTaskState::Completed, Some(0), "[exited with code 0]".into())));
         assert_eq!(ending("error\n[exited with code 2]"), Some((BackgroundTaskState::Failed, Some(2), "[exited with code 2]".into())));
@@ -228,6 +296,10 @@ mod tests {
         let output = temp.join("abc.output");
         std::fs::write(&output, "line 1\nline 2\n[exited with code 0]\n").unwrap();
         assert!(is_task_output(&output));
+        assert!(possible_task_output(&temp.join("late.output")));
+        assert!(!possible_task_output(&temp.join("../tasks/untrusted.output")));
+        #[cfg(windows)]
+        assert!(!possible_task_output(Path::new("/tmp/claude-1/project/tasks/gitbash.output")));
         let elsewhere = tempfile::tempdir().unwrap();
         let stranger = elsewhere.path().join("tasks").join("x.output");
         std::fs::create_dir_all(stranger.parent().unwrap()).unwrap();

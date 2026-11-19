@@ -296,7 +296,7 @@ mod tests {
         let env: std::collections::HashMap<_, _> = target.environment().into_iter().collect();
         assert_eq!(env["ANTHROPIC_BASE_URL"], "http://127.0.0.1:11434");
         assert_eq!(env["ANTHROPIC_API_KEY"], "");
-        assert_eq!(Path::new(&env["CLAUDE_CONFIG_DIR"]), Path::new("/data/local-models/claude"));
+        assert_eq!(std::path::Path::new(&env["CLAUDE_CONFIG_DIR"]), std::path::Path::new("/data/local-models/claude"));
         assert_eq!(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "qwen3:8b-thingmaker-16k");
         assert_eq!(env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1");
         assert_eq!(env["CLAUDE_CODE_SIMPLE"], "1", "a lean start that fits a local window");

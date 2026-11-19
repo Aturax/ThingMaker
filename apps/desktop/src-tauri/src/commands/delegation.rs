@@ -174,12 +174,14 @@ impl WorkerLauncher for HostLauncher {
             // Resolved once: the revision recorded is the one this launch used.
             let resolved = super::member_resources::resolve(&state, &spec.root, &spec.slot)?;
             let revision = revision_of(&state, &spec.root, &spec.slot, resolved.as_ref());
+            let builtin_web = resolved.as_ref().is_some_and(|r| r.builtin_web);
             let resource_files = match resolved {
                 Some(resources) => thingmaker_supervisor::integrations::member_resources::apply_to_launch(resources, &mut launch)?,
                 None => None,
             };
             let program = super::session::program_of(&target, &launch);
             let mut config = SessionActorConfig::new(target, launch);
+            config.builtin_web = builtin_web;
             config.resource_files = resource_files;
             config.environment = super::session::launch_environment(&state).with_program_dir(&program);
             config.before_prompt = Some(super::review::turn_snapshots(&state, &record.id, &record.canonical_root));
@@ -195,6 +197,7 @@ impl WorkerLauncher for HostLauncher {
             }
             #[cfg(windows)]
             super::local_mcp::prepare(&state, &mut config).await?;
+            let web = super::web::prepare(&state, &mut config).await;
             let actor = SessionActor::open(config).await?;
             let snapshot = actor.snapshot().await?;
             let recorded = snapshot.agent_session_id.clone().unwrap_or_else(|| reserved.as_str().to_string());
@@ -211,6 +214,7 @@ impl WorkerLauncher for HostLauncher {
                 s.session_set_parent(&row.id, parent.as_ref().map(|parent| parent.id.as_str()))?;
                 s.session_set_title_overlay(&row.id, Some(&spec.title))
             });
+            super::web::attach(&state, &actor, web);
             state.insert_actor(actor.handle().id.clone(), recorded, actor.clone(), spec.root.clone());
             state.set_actor_model(&actor.handle().id, spec.slot.model.as_deref());
             Ok((actor, Some(revision)))

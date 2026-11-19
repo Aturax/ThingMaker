@@ -51,7 +51,7 @@ export function MemberResources({ worker, onChange, initialWorkspace = "" }: { i
   const kind = tab === "skills" ? "skill" : "mcp";
   const visible = (catalog?.entries ?? []).filter((entry) => entry.kind === kind && `${entry.name} ${entry.description} ${entry.group} ${entry.source ?? ""} ${entry.target ?? ""}`.toLowerCase().includes(search.toLowerCase()));
   const groups = [...new Set(visible.map((entry) => entry.group))].sort();
-  const groupLabel = (group: string) => group === "user" ? t("Local · user") : group === "project" ? t("Local · project") : `${t("Plugin")} · ${group.slice(7)}`;
+  const groupLabel = (group: string) => group === "builtin" ? "ThingMaker" : group === "user" ? t("Local · user") : group === "project" ? t("Local · project") : `${t("Plugin")} · ${group.slice(7)}`;
   const known = new Set(catalog?.entries.map((entry) => entry.id));
   const missing = catalog ? [...selection.skills, ...selection.mcps].filter((id) => !known.has(id)) : [];
 

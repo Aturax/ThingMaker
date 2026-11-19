@@ -997,6 +997,9 @@ mod tests {
         assert_eq!(http["mcp_servers.relay"]["startup_timeout_sec"], 30);
         assert_eq!(http["mcp_servers.relay"]["tool_timeout_sec"], SESSION_TOOL_TIMEOUT_SECS);
         assert_eq!(mcp_config(Some(&json!([]))), None);
+        let web = mcp_config(Some(&json!([{"name":"thingmaker-web","url":"http://127.0.0.1:1234/mcp",
+            "headers":[{"name":"Authorization","value":"Bearer local-test"}]}]))).unwrap();
+        assert_eq!(web["mcp_servers.thingmaker-web"]["http_headers"]["Authorization"], "Bearer local-test");
     }
 
     #[test]

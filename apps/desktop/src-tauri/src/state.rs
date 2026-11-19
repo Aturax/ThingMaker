@@ -46,6 +46,7 @@ pub struct ResolvedProvider {
 }
 
 pub struct AppState {
+    pub web_sessions: Mutex<HashMap<String, Result<crate::commands::web::Connection, String>>>,
     pub storage: Arc<Mutex<Storage>>,
     pub actors: Mutex<HashMap<String, SessionActor>>,
     /// Canonical root per live session id, for worktree cleanup safety.
@@ -88,6 +89,7 @@ impl AppState {
         tracing::info!(?data_dir, "desktop state initialized");
         let storage = Arc::new(Mutex::new(storage));
         Ok(Self {
+            web_sessions: Mutex::new(HashMap::new()),
             review_caches: Mutex::new(HashMap::new()),
             pending_update: Mutex::new(None),
             storage,
@@ -170,6 +172,7 @@ impl AppState {
     }
 
     pub fn remove_actor(&self, id: &str) -> Option<SessionActor> {
+        self.web_sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         self.actor_models.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(id);
         self.actor_roots
             .lock()

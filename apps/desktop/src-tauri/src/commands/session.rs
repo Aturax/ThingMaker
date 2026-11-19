@@ -216,7 +216,7 @@ pub(crate) fn build_launch(
 
 /// The `node_modules` folder an adapter script lives in, so its package and
 /// the Claude Code binary it ships are granted together.
-fn adapter_package_root(script: &Path) -> Option<PathBuf> {
+pub(super) fn adapter_package_root(script: &Path) -> Option<PathBuf> {
     script.ancestors().find(|dir| dir.file_name().is_some_and(|name| name == "node_modules")).map(Path::to_path_buf).or_else(|| script.parent().map(Path::to_path_buf))
 }
 
@@ -425,6 +425,7 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
     let combo = super::delegation::starting_combo(&state, request.combo.clone(), row_before.as_deref());
     super::delegation::prepare_orchestrator(&state, session_id.as_str(), PathBuf::from(&record.canonical_root), &combo, &mut launch, &mut config);
     if let Some(resources) = resolved {
+        config.builtin_web = resources.builtin_web;
         match thingmaker_supervisor::integrations::member_resources::apply_to_launch(resources, &mut launch) {
             Ok(files) => config.resource_files = files,
             Err(error) => {
@@ -439,6 +440,7 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
         super::delegation::release(&state, session_id.as_str()).await;
         return Err(error);
     }
+    let web = super::web::prepare(&state, &mut config).await;
 
     let actor = match SessionActor::open(config).await {
         Ok(actor) => actor,
@@ -490,6 +492,7 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
     let _ = state.with_storage(|storage| storage.setting_set(super::delegation::COMBO_KEY, &super::delegation::session_scope(&desktop_session.id), &combo));
     super::delegation::watch_orchestrator(&state, &actor);
     super::forks::watch_nested(&state, &actor);
+    super::web::attach(&state, &actor, web);
     state.insert_actor(handle.id.clone(), recorded_id.clone(), actor, PathBuf::from(&record.canonical_root));
     state.set_actor_model(&handle.id, opened_model.as_deref());
     // Baseline before agent work (REV-02). Captured off the command path so a
@@ -1043,6 +1046,12 @@ pub struct BackgroundOutput {
     pub text: String,
     /// The whole file's length, so the interface can say what it left out.
     pub bytes: u64,
+}
+
+/// Stops a task belonging to this attached session, without cancelling its turn.
+#[tauri::command]
+pub async fn session_background_stop(request: BackgroundOutputRequest, state: State<'_, AppState>) -> CommandResult<()> {
+    actor_for(&state, &request.handle)?.stop_background(request.task_id).await
 }
 
 /// The output so far of a command the agent left running in the background.

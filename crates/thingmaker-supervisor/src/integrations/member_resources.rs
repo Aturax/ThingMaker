@@ -374,6 +374,15 @@ pub fn catalog_with_homes(home: &Path, config_dir: &Path, codex_home: &Path, roo
             entry.problem = Some("Replaced by another definition of the same name".into());
         }
     }
+    #[cfg(windows)]
+    entries.push(ResourceEntry {
+        id: BUILTIN_WEB.into(), name: "ThingMaker Web".into(), kind: "mcp".into(),
+        description: "Allow this agent to search and read the web using ThingMaker.".into(),
+        group: "builtin".into(), available: true, problem: None, source: "ThingMaker".into(),
+        target: None, mcp_dependencies: vec![], dependency_notes: vec![],
+        runtime_name: "thingmaker-web".into(), config: Value::Null, revision: "1".into(),
+        skill_path: None, bridge_skill: false,
+    });
     entries.sort_by(|a, b| a.id.cmp(&b.id));
     skill_dependencies::annotate(&mut entries);
     Ok(ResourceCatalog { entries, local_only: false, notes: vec![
@@ -382,7 +391,10 @@ pub fn catalog_with_homes(home: &Path, config_dir: &Path, codex_home: &Path, roo
     ] })
 }
 
+pub const BUILTIN_WEB: &str = "mcp:builtin:thingmaker-web";
+
 pub struct ResolvedResources {
+    pub builtin_web: bool,
     pub skills: Vec<String>,
     pub mcps: BTreeMap<String, Value>,
     pub revision: String,
@@ -520,7 +532,12 @@ pub fn prepare_claude_skills(resources: &ResolvedResources) -> Result<Option<Pre
         #[cfg(unix)]
         let linked = std::os::unix::fs::symlink(&target, plugin.join("skills").join(name));
         #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_dir(&target, plugin.join("skills").join(name));
+        let linked = {
+            let destination = plugin.join("skills").join(name);
+            std::os::windows::fs::symlink_dir(&target, &destination).or_else(|error| {
+                if error.raw_os_error() == Some(1314) { copy_skill_files(&target, &destination) } else { Err(error) }
+            })
+        };
         linked.map_err(|_| DesktopError::io("Cannot link the selected skill into its temporary plugin"))?;
         plugins.push(plugin);
     }
@@ -542,6 +559,7 @@ pub fn resolve(catalog: &ResourceCatalog, selection: &ResourceSelection, environ
     }
     for (kind, ids) in [("skill", &selection.skills), ("mcp", &selection.mcps)] {
         for id in ids {
+            if !cfg!(windows) && kind == "mcp" && id == BUILTIN_WEB { continue; }
             let entry = catalog.entries.iter().find(|entry| entry.id == *id && entry.kind == kind && entry.available)
                 .ok_or_else(|| DesktopError::not_ready(format!("Selected resource {id} is missing or disabled. Edit this member's selection.")))?;
             revisions.insert(id, &entry.revision);
@@ -554,7 +572,7 @@ pub fn resolve(catalog: &ResourceCatalog, selection: &ResourceSelection, environ
                     skill_sources.push(SelectedSkill { path, runtime_name: entry.runtime_name.clone(), bridge: entry.bridge_skill, name: entry.name.clone(), description: entry.description.clone() });
                 }
             }
-            else {
+            else if entry.id != BUILTIN_WEB {
                 let mut config = entry.config.clone();
                 expand_environment(&mut config, environment)?;
                 if catalog.local_only && !local_endpoint(&config) {
@@ -569,7 +587,11 @@ pub fn resolve(catalog: &ResourceCatalog, selection: &ResourceSelection, environ
     skills.sort();
     skills.dedup();
     let revision = content_hash(serde_json::to_vec(&json!([revisions, mcps])).unwrap_or_default().as_slice());
-    Ok(ResolvedResources { skills, mcps, revision, skill_sources })
+    let builtin_web = cfg!(windows) && selection.mcps.iter().any(|id| id == BUILTIN_WEB);
+    if builtin_web && mcps.contains_key("thingmaker-web") {
+        return Err(DesktopError::conflict("Choose one definition for thingmaker-web"));
+    }
+    Ok(ResolvedResources { builtin_web, skills, mcps, revision, skill_sources })
 }
 
 fn expand_environment(value: &mut Value, env: &HashMap<String, String>) -> Result<(), DesktopError> {
@@ -598,7 +620,7 @@ fn expand_environment(value: &mut Value, env: &HashMap<String, String>) -> Resul
 
 /// Fail closed on older installations: this pilot was verified with these
 /// adapter/SDK versions, rather than assuming unknown versions honor options.
-pub fn check_harness(adapter_script: &Path) -> Result<(), DesktopError> {
+pub fn check_harness(adapter_script: &Path, local: bool) -> Result<(), DesktopError> {
     let package = adapter_script.parent().and_then(Path::parent).ok_or_else(|| DesktopError::not_ready("Cannot locate Claude ACP package"))?;
     let (adapter, sdk) = ((0, 106, 0), (0, 3, 322));
     for (file, minimum) in [(package.join("package.json"), adapter), (package.join("node_modules/@anthropic-ai/claude-agent-sdk/package.json"), sdk)] {
@@ -666,6 +688,25 @@ mod tests {
         assert!(resolve(&found, &missing, &HashMap::new()).is_err());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn a_web_scout_skill_offers_the_builtin_connection_but_only_selecting_it_enables_web() {
+        let home = tempfile::tempdir().unwrap();
+        let claude = home.path().join(".claude");
+        write(&claude.join("skills/web-scout/SKILL.md"), "---\nname: web-scout\ndescription: Research with web-scout MCP tools.\n---\nUse web_search then web_read.");
+        let found = catalog(home.path(), &claude, None).unwrap().local_only();
+        let skill = found.entries.iter().find(|e| e.id == "skill:user:web-scout").unwrap();
+        assert!(skill.mcp_dependencies.iter().any(|dep| dep.mcp_ids.iter().any(|id| id == BUILTIN_WEB)));
+        let mut chosen = ResourceSelection { skills: vec![skill.id.clone()], mcps: vec![] };
+        let without = resolve(&found, &chosen, &HashMap::new()).unwrap();
+        assert!(!without.builtin_web);
+        chosen.mcps.push(BUILTIN_WEB.into());
+        let with = resolve(&found, &chosen, &HashMap::new()).unwrap();
+        assert!(with.builtin_web);
+        assert!(with.mcps.is_empty(), "the authenticated connection is created per session");
+        assert_ne!(with.revision, without.revision);
+    }
+
     #[test]
     fn plugin_mcps_expand_their_root_and_local_project_servers_override_user_servers() {
         let temp = tempfile::tempdir().unwrap();
@@ -683,7 +724,7 @@ mod tests {
         let selected = ResourceSelection { skills: vec![], mcps: vec!["mcp:local:same".into(), "mcp:art@market:paint".into()] };
         let resolved = resolve(&found, &selected, &HashMap::new()).unwrap();
         assert_eq!(resolved.mcps["same"]["command"], "local");
-        assert_eq!(resolved.mcps["plugin:art:paint"]["args"][0], plugin.join("server.js").to_string_lossy().as_ref());
+        assert_eq!(Path::new(resolved.mcps["plugin:art:paint"]["args"][0].as_str().unwrap()), plugin.join("server.js"));
         assert!(!found.entries.iter().find(|entry| entry.id == "mcp:user:same").unwrap().available);
     }
 
@@ -735,10 +776,10 @@ mod tests {
     fn missing_or_old_harness_is_rejected_before_launch() {
         let temp = tempfile::tempdir().unwrap();
         let script = temp.path().join("dist/index.js");
-        assert!(check_harness(&script).is_err());
+        assert!(check_harness(&script, false).is_err());
         write(&temp.path().join("package.json"), r#"{"version":"0.106.0"}"#);
         write(&temp.path().join("node_modules/@anthropic-ai/claude-agent-sdk/package.json"), r#"{"version":"0.3.322"}"#);
-        assert!(check_harness(&script).is_ok());
+        assert!(check_harness(&script, false).is_ok());
     }
 
     #[test]

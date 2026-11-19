@@ -22,6 +22,7 @@ export function PendingLocalResources({ sessionId }: { sessionId: string }) {
 }
 
 export function LocalBadge({ sessionId, localChat, configOptions }: { sessionId: string; localChat: boolean; configOptions: unknown }) {
+  const webAvailable = useStore((s) => s.sessions[sessionId]?.snapshot.webAvailable);
   const catalog = useStore((s) => s.providerModels.local);
   const pending = useStore((s) => s.pendingProvider[sessionId]);
   const setPending = useStore((s) => s.setPendingProvider);
@@ -43,8 +44,8 @@ export function LocalBadge({ sessionId, localChat, configOptions }: { sessionId:
 
   return (
     <>
-      <span className="chip small chip-private" title={localChat ? t("This chat only talks to Ollama on this computer") : t("This agent runs in a sandbox that can only reach this computer")}>
-        {localChat ? t("Private · on this computer · free") : t("Private · sandboxed · free")}
+      <span className="chip small chip-private" title={localChat ? t("This chat only talks to Ollama on this computer") : t("The model runs on this computer. ThingMaker Web handles web requests when included in the agent’s resources.")}>
+        {localChat || webAvailable === false ? t("Private · on this computer · free") : t("Local · sandboxed · free")}
       </span>
       {canBeAgent && !pending && (
         <button className="button button-small" onClick={() => void toAgent()} title={t("Work on the code with this model, as an agent")} type="button">

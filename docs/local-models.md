@@ -2,8 +2,7 @@
 
 Models installed in [Ollama](https://ollama.com) on this computer, as a
 fourth provider beside Claude Code, Codex and Gemini. **Free:** nothing is
-billed and no account is used. **Private:** what a local session reads,
-writes, runs or says stays on this computer.
+billed and no account is used. Chat mode only contacts Ollama. Local agents stay offline by default. On Windows, selecting **ThingMaker Web** in an agent’s resources allows it to search and read public websites.
 
 ## Two ways to run a model
 
@@ -38,7 +37,9 @@ not to think (`/no_think`), because thinking takes most of a turn on a laptop.
   - With no sandbox available, agents do not start; there is no fallback.
 - **Claude Code's background traffic is off for agents** (telemetry, error
   reports, feature flags, update checks). Claude Code and Codex each use a dedicated
-  settings folder under ThingMaker's data directory.
+  settings folder under ThingMaker's data directory, never `~/.claude`, so the
+  person's Claude login, MCP servers and plugins are not used. ThingMaker
+  handles web requests in a separate process for each attachment.
   Custom connections can run programs under the local sandbox or connect to
   loopback endpoints. Remote MCP URLs are unavailable in local mode.
 - **A local lead hires only local helpers**, and Big Thing never moves a local
@@ -77,6 +78,8 @@ Ollama loads the model again when it is needed.
   writes a file from inside the sandbox.
 - `agents/local/sandbox.rs`: the macOS sandbox reaches this computer and
   nothing else.
-- `thingmaker-appcontainer`: quoting and parsing; the Windows code is
-  type-checked with `cargo check --target x86_64-pc-windows-msvc` and has not
-  yet run on Windows.
+- The desktop's opt-in `commands::web::tests` run Claude Code inside the
+  Windows AppContainer and Codex through its app-server with an Ollama model.
+  They check that the agent opens a real source in the shared browser.
+  The browser handoff and filter selection can also be tested with
+  `node --test runtime/web/session.test.mjs` after installing the locked npm dependencies and Chromium headless shell in `runtime/web`.

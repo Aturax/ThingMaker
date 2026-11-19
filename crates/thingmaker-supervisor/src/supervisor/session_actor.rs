@@ -120,6 +120,7 @@ pub struct SessionActorConfig {
     pub fork_at: Option<String>,
     pub before_prompt: Option<BeforePrompt>,
     /// Keeps generated skill-only plugins alive for this actor's lifetime.
+    pub builtin_web: bool,
     pub resource_files: Option<Arc<tempfile::TempDir>>,
     /// Dropping the last actor configuration closes its local team endpoint.
     #[cfg(windows)]
@@ -145,6 +146,7 @@ impl SessionActorConfig {
             fork_from: None,
             fork_at: None,
             before_prompt: None,
+            builtin_web: false,
             resource_files: None,
             #[cfg(windows)]
             local_team_lifetime: None,
@@ -275,6 +277,7 @@ pub struct Snapshot {
     /// Which provider this attachment runs on. The renderer reads it to know
     /// which account a turn is charged to and which transcript to look in.
     pub provider: Provider,
+    pub web_available: bool,
     /// The agent's own id for the session, once `session/new` has answered.
     pub agent_session_id: Option<String>,
     pub process: ProcessState,
@@ -328,6 +331,10 @@ enum Command {
     Snapshot {
         reply: oneshot::Sender<Snapshot>,
     },
+    StopBackground {
+        task_id: String,
+        reply: Reply<()>,
+    },
     BackgroundTasks {
         reply: oneshot::Sender<Vec<BackgroundTask>>,
     },
@@ -355,6 +362,11 @@ enum Internal {
         message_id: String,
         result: Result<Value, TransportError>,
         reply: Option<Reply<SteerOutcome>>,
+    },
+    StopBackgroundResult {
+        task_id: String,
+        result: Result<Value, TransportError>,
+        reply: Reply<()>,
     },
     SetConfigResult {
         result: Result<Value, TransportError>,
@@ -586,6 +598,11 @@ impl SessionActor {
         reply_rx
             .await
             .map_err(|_| DesktopError::not_ready("session actor dropped the history reply"))
+    }
+
+    /// Stops only the selected task, leaving the parent turn running.
+    pub async fn stop_background(&self, task_id: String) -> Result<(), DesktopError> {
+        self.send(|reply| Command::StopBackground { task_id, reply }).await
     }
 
     /// The commands this session's agent left running in the background,
@@ -999,6 +1016,8 @@ impl ActorState {
                     command: input("command"),
                     description: input("description"),
                     output_path: path.clone(),
+                    can_stop: false,
+                    native_lifecycle: false,
                     state: BackgroundTaskState::Running,
                     exit_code: None,
                     ending: None,
@@ -1020,9 +1039,7 @@ impl ActorState {
     /// it ended, or the actor is gone.
     fn watch_background(&self, task_id: String, path: String) {
         let path = std::path::PathBuf::from(path);
-        if !background::is_task_output(&path) {
-            return;
-        }
+        if !background::possible_task_output(&path) { return; }
         let internal = self.internal.clone();
         tokio::spawn(async move {
             let mut seen: Option<u64> = None;
@@ -1030,6 +1047,10 @@ impl ActorState {
             while !internal.is_closed() {
                 let file = path.clone();
                 let read = tokio::task::spawn_blocking(move || -> std::io::Result<(u64, Option<String>, i64)> {
+                    let file = file.canonicalize()?;
+                    if !background::possible_task_output(&file) {
+                        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "not a task output"));
+                    }
                     let meta = std::fs::metadata(&file)?;
                     let modified = meta.modified().map(unix_ms).unwrap_or_else(|_| now_unix_ms() as i64);
                     if Some(meta.len()) == seen {
@@ -1048,14 +1069,16 @@ impl ActorState {
                             return;
                         }
                     }
-                    _ => {
+                    Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
                         missing += 1;
                         if missing >= 10 {
+                            if seen.is_none() { return; }
                             let ending = "[its output file is gone]".to_string();
                             let _ = internal.send(Internal::BackgroundEnded { task_id, state: BackgroundTaskState::Stopped, exit_code: None, ending, ended_at_unix_ms: now_unix_ms() as i64 }).await;
                             return;
                         }
                     }
+                    _ => return,
                 }
                 time::sleep(Duration::from_secs(1)).await;
             }
@@ -1092,6 +1115,18 @@ impl ActorState {
             SessionUpdate::Usage(usage) => SessionUpdate::Usage(local_window(&self.launch, usage)),
             other => other,
         };
+        if let SessionUpdate::Unknown(unknown) = &update
+            && matches!(unknown.original_kind.as_str(), "async_task_spawned" | "async_task_progress" | "async_task_state_update")
+        {
+            if let Some(mut task) = background::native_update(&unknown.raw, &self.background, now_unix_ms() as i64) {
+                if let Some(input) = self.tool_calls.get(&task.tool_call_id).and_then(|patch| patch.raw_input.as_ref()) {
+                    task.command = task.command.or_else(|| input.get("command").and_then(Value::as_str).map(str::to_string));
+                }
+                self.background.insert(task.task_id.clone(), task.clone());
+                self.emit(SessionEvent::BackgroundTask(task));
+            }
+            return;
+        }
         match &update {
             SessionUpdate::ToolCall(patch) | SessionUpdate::ToolCallUpdate(patch) => {
                 if let Some(id) = patch.tool_call_id.clone() {
@@ -1717,6 +1752,23 @@ impl ActorState {
             Command::Snapshot { reply } => {
                 let _ = reply.send(self.snapshot());
             }
+            Command::StopBackground { task_id, reply } => {
+                let Some(task) = self.background.get(&task_id) else {
+                    let _ = reply.send(Err(DesktopError::not_ready("no such background task in this session")));
+                    return true;
+                };
+                if task.state != BackgroundTaskState::Running {
+                    let _ = reply.send(Ok(()));
+                    return true;
+                }
+                if !task.can_stop {
+                    let _ = reply.send(Err(DesktopError::not_ready("Update the Claude provider and reopen this session to stop individual background tasks.")));
+                    return true;
+                }
+                let params = json!({"sessionId": self.expected_session_id, "asyncTaskId": task_id});
+                self.spawn_request("_session/async_task/stop", params, self.config.timeouts.control, None,
+                    move |result| Internal::StopBackgroundResult { task_id, result, reply });
+            }
             Command::BackgroundTasks { reply } => {
                 let _ = reply.send(self.background_list());
             }
@@ -1778,6 +1830,7 @@ impl ActorState {
         Snapshot {
             handle: self.handle.clone(),
             provider: self.launch.provider(),
+            web_available: cfg!(windows) && self.config.builtin_web,
             agent_session_id: self.agent_session_id.clone(),
             process: self.process,
             attachment: self.attachment,
@@ -2112,8 +2165,29 @@ impl ActorState {
                 };
                 let _ = reply.send(outcome);
             }
+            Internal::StopBackgroundResult { task_id, result, reply } => {
+                let outcome = match result {
+                    Ok(value) if value.get("stopped").and_then(Value::as_bool) == Some(true) => {
+                        if let Some(task) = self.background.get_mut(&task_id)
+                            && task.state == BackgroundTaskState::Running
+                        {
+                            task.state = BackgroundTaskState::Stopped;
+                            task.ending = Some("[stopped by user]".into());
+                            task.ended_at_unix_ms = Some(now_unix_ms() as i64);
+                            let task = task.clone();
+                            self.emit(SessionEvent::BackgroundTask(task));
+                        }
+                        Ok(())
+                    }
+                    Ok(_) if self.background.get(&task_id).is_some_and(|task| task.state != BackgroundTaskState::Running) => Ok(()),
+                    Ok(_) => Err(DesktopError::not_ready("The provider could not stop this task. It may no longer be available.")),
+                    Err(error) => Err(errors::map_transport_error(error)),
+                };
+                let _ = reply.send(outcome);
+            }
             Internal::BackgroundEnded { task_id, state, exit_code, ending, ended_at_unix_ms } => {
                 if let Some(task) = self.background.get_mut(&task_id)
+                    && !task.native_lifecycle
                     && task.state == BackgroundTaskState::Running
                 {
                     task.state = state;
@@ -2307,7 +2381,9 @@ async fn run_loop(
     });
     state.set_process(ProcessState::Negotiating);
     let control = state.config.timeouts.control;
-    let handshake = capabilities::initialize_params(&state.config.client);
+    let claude_adapter = matches!(&state.config.launch, AgentLaunch::Claude(options)
+        if options.local.as_ref().is_none_or(|local| local.kind == crate::agents::local::LocalKind::Agent));
+    let handshake = capabilities::initialize_params(&state.config.client, claude_adapter);
     state.spawn_request("initialize", handshake, control, None, Internal::InitializeResult);
     let mut tick = time::interval(Duration::from_secs(1));
     let mut incoming_open = true;

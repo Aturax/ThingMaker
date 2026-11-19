@@ -181,6 +181,9 @@ export type OpenRequest = {
 const HISTORY_PAGE = 500;
 
 export const api = {
+  webBrowserOpen: () => call<SessionHandle>(COMMANDS.webBrowserOpen),
+  webControl: (handle: SessionHandle, action: import("@thingmaker/contracts").WebAction) =>
+    call<import("@thingmaker/contracts").WebFrame>(COMMANDS.webControl, { handle, action }),
   screenDevices: () => call<import("@thingmaker/contracts").ScreenDevice[]>(COMMANDS.screenDevices),
   screenCapture: (device: import("@thingmaker/contracts").ScreenDevice) => call<string>(COMMANDS.screenCapture, { device }),
   screenStreamStart: (device: import("@thingmaker/contracts").ScreenDevice, onEvent: (event: import("@thingmaker/contracts").ScreenStreamEvent) => void) => {
@@ -206,6 +209,7 @@ export const api = {
     return call<void>(COMMANDS.sessionSubscribe, { handle, onEvent: channel });
   },
   sessionSnapshot: (handle: SessionHandle) => call<Snapshot>(COMMANDS.sessionSnapshot, { handle }),
+  sessionBackgroundStop: (handle: SessionHandle, taskId: string) => call<void>(COMMANDS.sessionBackgroundStop, { request: { handle, taskId } }),
   sessionBackgroundOutput: (handle: SessionHandle, taskId: string) => call<BackgroundOutput>(COMMANDS.sessionBackgroundOutput, { request: { handle, taskId } }),
   sessionSubmit: (handle: SessionHandle, requestId: string, text: string, attachmentIds: string[] = [], mentions: Mention[] = []) =>
     call<{ requestId: string; outcome: SubmissionOutcome }>(COMMANDS.sessionSubmit, {

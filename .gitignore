@@ -2,6 +2,7 @@
 node_modules/
 dist/
 dist-remote/
+dist-web/
 dist-local-mcp/
 *.tsbuildinfo
 .pnpm-store/

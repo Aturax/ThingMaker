@@ -27,6 +27,11 @@ try {
         }
     }
 } finally { $zip.Dispose() }
+$dependencyHash = (Get-FileHash "$source/package-lock.json").Hash
+$stamp = Join-Path $stage '.dependencies'
+$ready = (Test-Path -LiteralPath $stamp) -and ((Get-Content -LiteralPath $stamp -Raw).Trim() -eq $dependencyHash) -and (Test-Path "$stage/node_modules/@modelcontextprotocol/sdk/package.json")
 Copy-Item "$source/package.json","$source/package-lock.json" $stage -Force
+if ($ready) { return }
 & npm.cmd ci --prefix $stage --omit=dev --ignore-scripts --no-fund --no-audit
 if ($LASTEXITCODE -ne 0) { throw 'Could not stage locked local MCP dependencies' }
+Set-Content -LiteralPath $stamp -Value $dependencyHash
