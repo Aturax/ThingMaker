@@ -68,7 +68,9 @@ fn local_endpoint(config: &Value) -> bool {
 impl ResourceCatalog {
     pub fn local_only(mut self) -> Self {
         self.local_only = true;
-        for entry in self.entries.iter_mut().filter(|entry| entry.available && entry.kind == "mcp") {
+        // The built-in Web connection has no definition here: its loopback,
+        // token-protected endpoint is created per session by `web::prepare`.
+        for entry in self.entries.iter_mut().filter(|entry| entry.available && entry.kind == "mcp" && entry.id != BUILTIN_WEB) {
             if !local_endpoint(&entry.config) {
                 entry.available = false;
                 entry.problem = Some("Local agents can only reach MCP servers on this computer".into());
