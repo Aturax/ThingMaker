@@ -1,0 +1,98 @@
+name: Gemini account compatibility
+
+on:
+  pull_request:
+    paths:
+      - "crates/thingmaker-supervisor/**"
+      - "apps/desktop/**"
+      - "packages/contracts/**"
+      - "packages/test-fixtures/**"
+      - "Cargo.*"
+      - ".github/workflows/gemini-accounts.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm --filter @thingmaker/desktop test
+      - run: pnpm --filter @thingmaker/desktop build:vite
+
+      # Tauri refuses to compile when a bundled resource is missing. The
+      # runtimes are built by the release's prepare scripts; these tests
+      # never use them, so empty placeholders are enough.
+      - name: Stand in for the bundled Windows runtimes
+        shell: pwsh
+        run: |
+          $config = Get-Content apps/desktop/src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
+          foreach ($source in $config.bundle.resources.PSObject.Properties.Name) {
+            $path = Join-Path apps/desktop/src-tauri $source
+            if ($source.EndsWith('/')) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
+            elseif (-not (Test-Path $path)) { New-Item -ItemType File -Force -Path $path | Out-Null }
+          }
+
+      - name: Use ordinary Windows link permissions
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name AllowDevelopmentWithoutDevLicense -PropertyType DWord -Value 0 -Force | Out-Null
+
+      - name: Validate Gemini profiles, environment and terminal cleanup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $filters = @(
+            'agents::gemini',
+            'gemini_homes_share_settings_and_history_but_never_credentials',
+            'gemini_configuration_survives_atomic_saves_and_profile_removal_keeps_user_files',
+            'a_replaced_shared_file_is_reported_instead_of_silently_diverging',
+            'legacy_private_configuration_is_preserved_outside_the_removable_credentials',
+            'a_legacy_shared_cli_directory_is_replaced_without_copying_its_credentials',
+            'gemini_atomic_shared_preferences_are_synchronized_in_both_directions',
+            'gemini_new_shared_files_and_main_resets_do_not_leave_private_copies',
+            'explicit_account_paths_replace_mixed_case_windows_environment_names',
+            'terminal::tests'
+          )
+          foreach ($filter in $filters) {
+            cargo test -p thingmaker-supervisor --lib $filter
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          cargo test -p thingmaker-desktop --lib commands::session::recovery_tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p thingmaker-desktop --lib state::account_tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p thingmaker-desktop --lib commands::accounts::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p thingmaker-desktop --lib commands::terminal::auth_tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check the official Windows CLI without SSH or Google credentials
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binary = Join-Path $env:RUNNER_TEMP 'agy-1.5.9.exe'
+          Invoke-WebRequest -Uri 'https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.9-4515810895593472/windows-x64/cli_windows_x64.exe' -OutFile $binary
+          $expected = '539a9415a686d9ec45f5c59fe7d32c485c6fa9abaea50208ae8ede4ed3622b9fb2bfd6680c87dc52344981172a96ddacb261ff4231276b5572fb5b62a9b0221e'
+          if ((Get-FileHash -Path $binary -Algorithm SHA512).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'The Antigravity CLI download does not match its official SHA512 digest.'
+          }
+          $env:THINGMAKER_AGY = $binary
+          cargo test -p thingmaker-supervisor --lib agents::gemini::probe::tests::installed_cli_file_backend_is_signed_out_without_ssh -- --ignored --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

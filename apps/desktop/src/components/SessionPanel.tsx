@@ -6,6 +6,7 @@ import { t } from "../i18n";
 import { useStore, isWorkerIn, sessionTitle, type SessionTab } from "../store";
 import { api } from "../ipc";
 import { ConfigPickers } from "./ConfigPickers";
+import { VoiceInput } from "./VoiceInput";
 import { PendingPrompt } from "./PendingPrompt";
 import { TeamChip } from "./TeamEditor";
 import { FilesPane } from "./FilesPane";
@@ -33,7 +34,7 @@ import { Markdown, type PathHandler } from "../markdown";
 import { copiesItself, forkPointAt, splitNestedReports } from "../fork";
 import { isLocalChat } from "../localModels";
 import { ContextRing } from "./ContextRing";
-import { LocalBadge } from "./LocalBadge";
+import { LocalBadge, PendingLocalResources } from "./LocalBadge";
 import { NestedBanner, NestedReportsCard, NestedReportsStrip } from "./NestedSessions";
 import type { Card } from "../projection";
 import { assignImages, keyOf, type ImageRef } from "../transcriptImages";
@@ -1401,6 +1402,7 @@ export function SessionPanel({ sessionId }: { sessionId: string }) {
           />
         </div>
         {suggestion && <span className="small muted" id="reply-suggestion-hint">{t("Tab to accept · Esc to dismiss")}</span>}
+        <VoiceInput key={sessionId} target={sessionId} draft={draft} input={composerRef} localOnly={session.snapshot.provider === "local"} disabled={!canSend} onChange={(text) => { dismissSuggestion(); setDraft(sessionId, text); }} />
         <div className="composer-row">
           <button
             aria-label={t("Attach media")}
@@ -1421,6 +1423,7 @@ export function SessionPanel({ sessionId }: { sessionId: string }) {
           <ConfigPickers configOptions={configOptions} disabled={projection.process === "exited" || busy !== null} sessionId={sessionId} />
           {!configOptions && <span className="chip small">{t("the account's default model")}</span>}
           {!localChat && <TeamChip disabled={projection.process === "exited"} sessionId={sessionId} />}
+          <PendingLocalResources sessionId={sessionId} />
           {session.snapshot.provider === "local" && <LocalBadge configOptions={configOptions} localChat={localChat} sessionId={sessionId} />}
           <span className="composer-spacer" />
           {active && (

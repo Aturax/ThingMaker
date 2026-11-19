@@ -1,0 +1,9 @@
+{
+  "name": "thingmaker-local-mcp-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": { "test": "node --test bridge.test.mjs" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
+  }
+}

@@ -83,13 +83,13 @@ describe("a project's home", () => {
     expect(openSessionWithPreset).toHaveBeenCalledWith("w1", preset, undefined);
   });
 
-  it("distinguishes local chat and agent choices and starts the selected mode", () => {
+  it("distinguishes local chat and agent choices and starts the selected harness with its resources", async () => {
     const openSession = vi.fn(async () => undefined);
     const localModel = { name: "qwen2.5-coder:7b", needsCredits: false, efforts: [], inputImage: false, isDefault: false };
     useStore.setState({
       openSession,
       providers: [{ provider: "local", resolved: {}, auth: { loggedIn: true } }],
-      providerModels: { local: [{ ...localModel, id: "@chat/qwen2.5-coder:7b" }, { ...localModel, id: "@agent/qwen2.5-coder:7b" }] },
+      providerModels: { local: [{ ...localModel, id: "@chat/qwen2.5-coder:7b" }, { ...localModel, id: "@agent/qwen2.5-coder:7b" }, { ...localModel, id: "@agent/@codex/qwen2.5-coder:7b", name: "qwen2.5-coder:7b · Codex" }] },
       loadProviderModels: vi.fn(async () => []),
     } as never);
     render(<WorkspaceView workspaceId="w1" />);
@@ -100,6 +100,15 @@ describe("a project's home", () => {
     expect(screen.getByTitle("Provider and model").textContent).toContain("qwen2.5-coder:7b · Agent");
     fireEvent.click(screen.getByRole("button", { name: "Start session" }));
     expect(openSession).toHaveBeenCalledWith("w1", { mode: "new" }, "local", { model: "@agent/qwen2.5-coder:7b" });
+    calls.api.memberResources = vi.fn(async () => ({ entries: [{ name: "probe", id: "skill:user:probe", kind: "skill", group: "user", available: true }], notes: [] }));
+    fireEvent.click(screen.getByText("Skills and connections", { selector: "summary" }));
+    fireEvent.change(screen.getByLabelText("Harness"), { target: { value: "codex" } });
+    fireEvent.change(screen.getByLabelText("Resource mode"), { target: { value: "custom" } });
+    fireEvent.click(await screen.findByRole("checkbox", { name: "probe" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start session" }));
+    expect(openSession).toHaveBeenLastCalledWith("w1", { mode: "new" }, "local", {
+      model: "@agent/@codex/qwen2.5-coder:7b", resources: { skills: ["skill:user:probe"], mcps: [] },
+    });
   });
 
   it("lists recent sessions, folds the rest, and opens one from its row", () => {

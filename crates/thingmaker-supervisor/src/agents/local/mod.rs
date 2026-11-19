@@ -2,7 +2,7 @@
 //!
 //! Two ways to run one. **Chat** is [`chat_agent`], a small ACP agent inside
 //! this executable that passes messages to Ollama and has no tools.
-//! **Agent** is Claude Code's harness pointed at Ollama, in a sandbox that
+//! **Agent** runs Claude Code or Codex against Ollama in a sandbox that
 //! lets it reach only this computer (see `docs/plans/local-models.md`).
 //!
 //! A Local session is a Claude-style launch carrying a [`LocalTarget`]: the
@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 pub enum LocalKind {
     /// Talks; no tools, no agent program.
     Chat,
-    /// Claude Code's agent with the local model as its brain.
+    /// A tool-capable harness backed by the local model.
     Agent,
 }
 
@@ -62,11 +62,17 @@ pub fn window_for(name: &str, chosen: Option<u64>) -> u64 {
 /// Splits a stored model id into its kind and Ollama name. A bare name is a
 /// chat: that is what a person most often wants from a local model.
 pub fn parse_model(id: &str) -> (LocalKind, &str) {
-    if let Some(name) = id.strip_prefix(AGENT_PREFIX) {
+    if let Some(name) = id.strip_prefix("@agent/@codex/").or_else(|| id.strip_prefix(AGENT_PREFIX)) {
         (LocalKind::Agent, name)
     } else {
         (LocalKind::Chat, id.strip_prefix(CHAT_PREFIX).unwrap_or(id))
     }
+}
+
+pub fn agent_harness(id: &str) -> Option<crate::agents::Provider> {
+    id.starts_with(AGENT_PREFIX).then(|| if id.starts_with("@agent/@codex/") {
+        crate::agents::Provider::Codex
+    } else { crate::agents::Provider::Claude })
 }
 
 pub fn model_id(kind: LocalKind, name: &str) -> String {
@@ -191,7 +197,8 @@ pub fn find_ollama(home: &Path) -> Option<PathBuf> {
 /// Whether a local session's conversation exists, for a resume: a chat's
 /// file, or the agent's Claude Code transcript.
 pub fn conversation_exists(home: &Path, root: &Path, session_id: &str) -> bool {
-    chat_file(home, session_id).is_some_and(|path| path.is_file())
+    crate::agents::codex::transcript_usage::find_rollout(&home.join("codex"), session_id).is_some()
+        || chat_file(home, session_id).is_some_and(|path| path.is_file())
         || crate::agents::claude::transcript_usage::transcript_path_in(&LocalTarget::claude_dir(home), root, session_id).is_file()
 }
 
@@ -202,7 +209,7 @@ fn chat_file(home: &Path, session_id: &str) -> Option<PathBuf> {
 /// The models a picker offers: every installed model as a chat, and the
 /// ones that use tools as an agent too. A model that thinks gets Think
 /// (off/on) as its effort, in a chat.
-pub fn catalog(models: &[ollama::LocalModel]) -> Vec<crate::agents::auth::ProviderModel> {
+pub fn catalog(models: &[ollama::LocalModel], claude: bool, codex: bool) -> Vec<crate::agents::auth::ProviderModel> {
     let mut out = Vec::new();
     for model in models {
         let size = if model.size_bytes > 0 { format!(" · {:.1} GB", model.size_bytes as f64 / 1e9) } else { String::new() };
@@ -220,16 +227,19 @@ pub fn catalog(models: &[ollama::LocalModel]) -> Vec<crate::agents::auth::Provid
             is_default: false,
         });
         if model.uses_tools() {
-            out.push(crate::agents::auth::ProviderModel {
-                id: model_id(LocalKind::Agent, &model.name),
-                name: model.name.clone(),
-                description: Some(format!("Agent · {facts}")),
-                needs_credits: false,
-                efforts: Vec::new(),
-                default_effort: None,
-                input_image: model.sees_images(),
-                is_default: false,
-            });
+            for (prefix, harness, available) in [(AGENT_PREFIX, "Claude Code", claude), ("@agent/@codex/", "Codex", codex)] {
+                if !available { continue }
+                out.push(crate::agents::auth::ProviderModel {
+                    id: format!("{prefix}{}", model.name),
+                    name: format!("{} · {harness}", model.name),
+                    description: Some(format!("Agent · {facts}")),
+                    needs_credits: false,
+                    efforts: Vec::new(),
+                    default_effort: None,
+                    input_image: model.sees_images(),
+                    is_default: false,
+                });
+            }
         }
     }
     if let Some(first) = out.first_mut() {
@@ -286,7 +296,7 @@ mod tests {
         let env: std::collections::HashMap<_, _> = target.environment().into_iter().collect();
         assert_eq!(env["ANTHROPIC_BASE_URL"], "http://127.0.0.1:11434");
         assert_eq!(env["ANTHROPIC_API_KEY"], "");
-        assert_eq!(env["CLAUDE_CONFIG_DIR"], "/data/local-models/claude");
+        assert_eq!(std::path::Path::new(&env["CLAUDE_CONFIG_DIR"]), std::path::Path::new("/data/local-models/claude"));
         assert_eq!(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "qwen3:8b-thingmaker-16k");
         assert_eq!(env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1");
         assert_eq!(env["CLAUDE_CODE_SIMPLE"], "1", "a lean start that fits a local window");
@@ -303,6 +313,10 @@ mod tests {
         assert_eq!(meta["claudeCode"]["options"]["thinking"], serde_json::json!({ "type": "disabled" }));
         assert_eq!(meta["claudeCode"]["options"]["promptSuggestions"], serde_json::json!(false));
 
+        options.resources = Some(Default::default());
+        let lean = crate::agents::AgentLaunch::Claude(options).environment();
+        assert!(lean.contains(&("CLAUDE_CODE_SIMPLE".into(), "1".into())));
+
         let chat = LocalTarget { kind: LocalKind::Chat, served: "qwen3:8b".into(), ..target };
         let env: std::collections::HashMap<_, _> = chat.environment().into_iter().collect();
         assert_eq!(env[chat_agent::MODEL_ENV], "qwen3:8b");
@@ -312,9 +326,9 @@ mod tests {
     #[test]
     fn every_model_can_chat_and_only_those_with_tools_are_agents() {
         let model = |name: &str, capabilities: &[&str]| ollama::LocalModel { name: name.into(), family: String::new(), parameter_size: "8B".into(), quantization: "Q4_K_M".into(), size_bytes: 5_200_000_000, context_length: Some(40960), capabilities: capabilities.iter().map(|c| c.to_string()).collect(), kv_bytes_per_token: 147_456 };
-        let list = catalog(&[model("gemma3:4b", &["completion", "vision"]), model("qwen3:8b", &["completion", "tools", "thinking"])]);
+        let list = catalog(&[model("gemma3:4b", &["completion", "vision"]), model("qwen3:8b", &["completion", "tools", "thinking"])], true, true);
         let ids: Vec<&str> = list.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, ["@chat/gemma3:4b", "@chat/qwen3:8b", "@agent/qwen3:8b"]);
+        assert_eq!(ids, ["@chat/gemma3:4b", "@chat/qwen3:8b", "@agent/qwen3:8b", "@agent/@codex/qwen3:8b"]);
         assert!(list[0].input_image);
         assert_eq!(list[1].efforts, ["off", "on"], "a model that thinks gets Think in a chat");
         assert!(list[2].efforts.is_empty());

@@ -68,6 +68,7 @@ import {
   type McpInstallOutcome,
   type McpOverview,
   type MemberResourceCatalog,
+  type MemberResourceSelection,
   type McpProbe,
   type McpScope,
   type McpServerSpec,
@@ -161,6 +162,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 }
 
 export type OpenRequest = {
+  resources?: MemberResourceSelection;
   workspaceId: string;
   mode: { mode: "new" } | { mode: "resume"; session_id: string } | { mode: "fork"; session_id: string };
   /** Which provider to launch. On a resume the session's own record wins. */
@@ -179,6 +181,24 @@ export type OpenRequest = {
 const HISTORY_PAGE = 500;
 
 export const api = {
+  webBrowserOpen: () => call<SessionHandle>(COMMANDS.webBrowserOpen),
+  webControl: (handle: SessionHandle, action: import("@thingmaker/contracts").WebAction) =>
+    call<import("@thingmaker/contracts").WebFrame>(COMMANDS.webControl, { handle, action }),
+  voiceStatus: () => call<boolean>(COMMANDS.voiceStatus),
+  voicePermission: () => call<void>(COMMANDS.voicePermission),
+  voiceDownload: (onProgress: (event: import("./voice").VoiceDownload) => void) => {
+    const channel = new Channel<import("./voice").VoiceDownload>(); channel.onmessage = onProgress;
+    return call<void>(COMMANDS.voiceDownload, { channel });
+  },
+  voiceRemove: () => call<void>(COMMANDS.voiceRemove),
+  voiceCancelDownload: () => call<void>(COMMANDS.voiceCancelDownload),
+  voiceDevices: () => call<{ id: string; name: string }[]>(COMMANDS.voiceDevices),
+  voiceStart: (id: string, onEvent: (event: import("./voice").VoiceEvent) => void) => {
+    const channel = new Channel<import("./voice").VoiceEvent>(); channel.onmessage = onEvent;
+    return call<void>(COMMANDS.voiceStart, { id, channel });
+  },
+  voiceStop: (id: string, cancel = false) => call<void>(COMMANDS.voiceStop, { id, cancel }),
+  voiceCleanup: (text: string, localOnly = false) => call<string>(COMMANDS.voiceCleanup, { text, localOnly }),
   screenDevices: () => call<import("@thingmaker/contracts").ScreenDevice[]>(COMMANDS.screenDevices),
   screenCapture: (device: import("@thingmaker/contracts").ScreenDevice) => call<string>(COMMANDS.screenCapture, { device }),
   screenStreamStart: (device: import("@thingmaker/contracts").ScreenDevice, onEvent: (event: import("@thingmaker/contracts").ScreenStreamEvent) => void) => {
@@ -204,6 +224,7 @@ export const api = {
     return call<void>(COMMANDS.sessionSubscribe, { handle, onEvent: channel });
   },
   sessionSnapshot: (handle: SessionHandle) => call<Snapshot>(COMMANDS.sessionSnapshot, { handle }),
+  sessionBackgroundStop: (handle: SessionHandle, taskId: string) => call<void>(COMMANDS.sessionBackgroundStop, { request: { handle, taskId } }),
   sessionBackgroundOutput: (handle: SessionHandle, taskId: string) => call<BackgroundOutput>(COMMANDS.sessionBackgroundOutput, { request: { handle, taskId } }),
   sessionSubmit: (handle: SessionHandle, requestId: string, text: string, attachmentIds: string[] = [], mentions: Mention[] = []) =>
     call<{ requestId: string; outcome: SubmissionOutcome }>(COMMANDS.sessionSubmit, {
@@ -271,7 +292,7 @@ export const api = {
   skillRemove: (scope: SkillScope, workspaceId: string | null, directoryName: string, keepBackup: boolean) =>
     call<RemovedSkill>(COMMANDS.skillRemove, { request: { scope, workspaceId, directoryName, keepBackup } }),
   mcpOverview: (workspaceId: string | null) => call<McpOverview>(COMMANDS.mcpOverview, { workspaceId }),
-  memberResources: (workspaceId: string | null, provider: Provider) => call<MemberResourceCatalog>(COMMANDS.memberResources, { workspaceId, provider }),
+  memberResources: (workspaceId: string | null, provider: Provider, local = false) => call<MemberResourceCatalog>(COMMANDS.memberResources, { workspaceId, provider, local }),
   mcpCatalog: () => call<McpCatalogEntry[]>(COMMANDS.mcpCatalog),
   mcpParse: (text: string, name?: string) => call<McpServerSpec[]>(COMMANDS.mcpParse, { request: { text, name: name ?? null } }),
   mcpInstall: (workspaceId: string | null, spec: McpServerSpec, providers: Provider[], scope: McpScope) =>
@@ -413,6 +434,7 @@ export const api = {
   providersStatus: () => call<ProviderInfo[]>(COMMANDS.providersStatus),
   providerSetLocation: (provider: Provider, location: ProviderLocation | null) =>
     call<void>(COMMANDS.providerSetLocation, { request: { provider, location } }),
+  providerLoginTerminal: (account: string) => call<TerminalInfo>(COMMANDS.providerLoginTerminal, { account }),
   providerLoginStart: (provider: Provider, onEvent: (event: LoginEvent) => void, account?: string) => {
     const channel = new Channel<LoginEvent>();
     channel.onmessage = onEvent;
@@ -446,7 +468,7 @@ export const api = {
   accountsList: (provider: Provider) => call<AccountView[]>(COMMANDS.accountsList, { provider }),
   accountAdd: (provider: Provider, label: string) => call<AccountView>(COMMANDS.accountAdd, { provider, label }),
   accountRename: (provider: Provider, id: string, label: string) => call<void>(COMMANDS.accountRename, { provider, id, label }),
-  accountRemove: (provider: Provider, id: string) => call<void>(COMMANDS.accountRemove, { provider, id }),
+  accountRemove: (provider: Provider, id: string, localOnly = false) => call<string | null>(COMMANDS.accountRemove, { provider, id, localOnly }),
   accountSetActive: (provider: Provider, id: string) => call<void>(COMMANDS.accountSetActive, { provider, id }),
   delegationComboGet: (handle: SessionHandle) => call<Combo | null>(COMMANDS.delegationComboGet, { handle }),
   delegationComboSet: (handle: SessionHandle, combo: Combo) => call<Combo>(COMMANDS.delegationComboSet, { request: { handle, combo } }),

@@ -19,13 +19,33 @@ Flags (after the real ones):
   --mock-slow    the answer streams slowly, so a turn can be cancelled
 """
 import json
+import os
+from pathlib import Path
 import signal
+import subprocess
 import sys
 import time
 import uuid
 
 KNOWN = "c0ffee00-0000-4000-8000-000000000001"
 args = sys.argv[1:]
+if args == ["--version"]:
+    print("1.5.9")
+    sys.exit(0)
+home = Path(os.environ.get("HOME", os.environ.get("USERPROFILE", ".")))
+marker = home / ".gemini/antigravity-cli/cache/antigravity-keyring-unavailable"
+file_auth = marker.is_file() and time.time() - marker.stat().st_mtime < 3600
+if args == ["models"]:
+    if file_auth and not (home / ".gemini/antigravity-cli/antigravity-oauth-token").is_file():
+        print("Please sign in to view available models", file=sys.stderr)
+        sys.exit(1)
+    print("gemini-3.8-flash-low\tGemini 3.8 Flash (Low)")
+    sys.exit(0)
+if "--mock-isolated" in args:
+    assert file_auth, "file auth must be refreshed before each launch"
+    child_ssh = subprocess.check_output([sys.executable, "-c", "import os,json; print(json.dumps({k:v for k,v in os.environ.items() if k.startswith('SSH_')}))"], text=True).strip()
+    assert child_ssh == "{}", "tool subprocesses must not inherit synthetic SSH variables"
+    print("child-ssh-env: " + child_ssh, file=sys.stderr, flush=True)
 sys.stderr.write("argv: " + json.dumps(args) + "\n")
 sys.stderr.flush()
 

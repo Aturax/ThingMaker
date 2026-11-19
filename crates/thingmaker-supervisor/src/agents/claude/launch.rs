@@ -141,6 +141,16 @@ impl ClaudeLaunchOptions {
     /// speaks ACP on stdio with no arguments at all, and everything the
     /// desktop wants to say about the session is said over the protocol.
     pub fn arguments(&self) -> Vec<String> {
+        #[cfg(windows)]
+        if self.local.as_ref().is_some_and(|target| target.kind == crate::agents::local::LocalKind::Agent) {
+            const STDIO: &[u8] = include_bytes!("../../../../../runtime/agents/windows-local-stdio.mjs");
+            let module = format!("data:text/javascript;base64,{}", crate::attachments::base64(STDIO));
+            // The AppContainer can read the adapter, while Node's realpath
+            // walk would also try to stat the otherwise inaccessible drive root.
+            let mut args = vec!["--preserve-symlinks".into(), "--preserve-symlinks-main".into(), "--import".into(), module];
+            args.extend_from_slice(&self.args);
+            return args;
+        }
         self.args.clone()
     }
 

@@ -30,6 +30,7 @@ pub const ALLOWED: &[&str] = &[
     "session_records",
     "session_snapshot",
     "session_background_output",
+    "session_background_stop",
     "session_history",
     "session_token_usage",
     "session_submit",
@@ -201,6 +202,7 @@ pub async fn dispatch(app: &AppHandle, command: &str, args: Value) -> Result<Val
         "session_list_open" => sync_call!(app, args, session::session_list_open),
         "session_records" => async_call!(app, args, session::session_records, "workspaceId"),
         "session_snapshot" => async_call!(app, args, session::session_snapshot, "handle"),
+        "session_background_stop" => async_call!(app, args, session::session_background_stop, "request"),
         "session_background_output" => async_call!(app, args, session::session_background_output, "request"),
         "session_history" => async_call!(app, args, session::session_history, "request"),
         "session_token_usage" => sync_call!(app, args, session::session_token_usage, "request"),
@@ -305,6 +307,7 @@ mod tests {
         for command in ALLOWED {
             assert!(source.contains(&format!("\"{command}\" =>")), "{command} is allowed but not routed");
         }
+        assert!(!ALLOWED.iter().any(|command| command.starts_with("voice_")), "microphone and dictation must stay desktop-only");
         for denied in ["workspace_trust", "terminal_open", "terminal_write", "git_push", "git_commit", "file_write_checked", "provider_login_start", "provider_logout", "runtime_env_set", "mcp_install", "settings_set", "odyssey_delete", "bigthing_rollback", "cleanup_run", "open_external", "app_quit", "config_write_file", "skill_create"] {
             assert!(!ALLOWED.contains(&denied), "{denied} must not be reachable from a phone");
         }

@@ -82,6 +82,7 @@ struct Inner {
     base: LaunchSpec,
     prefix: Vec<String>,
     generation: u64,
+    account_home: Option<std::path::PathBuf>,
     state: Mutex<State>,
     process: Mutex<Option<Transport>>,
 }
@@ -124,6 +125,7 @@ impl GeminiBridge {
             base: spec.clone(),
             prefix,
             generation,
+            account_home: launch.account_home,
             state: Mutex::new(State {
                 conversation: None,
                 wanted: settings.clone(),
@@ -148,6 +150,15 @@ impl GeminiBridge {
 
     /// Launches a process with `args` and starts reading it.
     async fn start(&self, args: Vec<String>) -> Result<(), TransportError> {
+        if let Some(folder) = self.inner.account_home.as_deref() {
+            super::launch::require_isolated_token(folder).map_err(TransportError::Io)?;
+            let program = self.inner.base.program.clone();
+            let folder = folder.to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                super::probe::verify_file_auth(&program, Duration::from_secs(15))?;
+                super::launch::prepare_file_auth(&folder)
+            }).await.map_err(|error| TransportError::Io(error.to_string()))?.map_err(TransportError::Io)?;
+        }
         let mut spec = self.inner.base.clone();
         spec.args = args;
         let (transport, incoming) = Transport::spawn_events(spec, self.inner.generation).await?;

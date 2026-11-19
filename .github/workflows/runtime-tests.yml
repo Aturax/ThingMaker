@@ -1,0 +1,19 @@
+name: Runtime tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  runtime:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --prefix runtime/web --ignore-scripts
+      - run: npm ci --prefix runtime/local-mcp --ignore-scripts
+      - run: node runtime/web/node_modules/playwright-core/cli.js install chromium --only-shell
+      - run: node --test "runtime/**/*.test.mjs"

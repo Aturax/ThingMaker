@@ -128,7 +128,8 @@ fn detect(file: &Path, entries: &[ResourceEntry], functions: Option<&Regex>) -> 
     for requirement in requirements {
         let ids: Vec<_> = entries.iter().filter(|entry| entry.kind == "mcp" && match &requirement.url {
             Some(url) => entry.config["url"].as_str().is_some_and(|configured| same_endpoint(url, configured)),
-            None => name_matches(&requirement.name, &entry.runtime_name) || name_matches(&requirement.name, entry.runtime_name.rsplit(':').next().unwrap_or(&entry.runtime_name)),
+            None => (entry.id == super::BUILTIN_WEB && normalized(&requirement.name) == "webscout")
+                || name_matches(&requirement.name, &entry.runtime_name) || name_matches(&requirement.name, entry.runtime_name.rsplit(':').next().unwrap_or(&entry.runtime_name)),
         }).map(|entry| entry.id.clone()).collect();
         let name = if requirement.name == "Declared MCP" && ids.len() == 1 { entries.iter().find(|entry| entry.id == ids[0]).unwrap().name.clone() } else { requirement.name };
         let key = (normalized(&name), ids.clone());

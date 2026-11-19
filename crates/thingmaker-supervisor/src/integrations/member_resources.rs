@@ -52,9 +52,33 @@ pub struct ResourceEntry {
 pub struct ResourceCatalog {
     pub entries: Vec<ResourceEntry>,
     pub notes: Vec<String>,
+    #[serde(skip)]
+    local_only: bool,
+}
+
+fn local_endpoint(config: &Value) -> bool {
+    match config.get("url") {
+        None => config["command"].is_string(),
+        Some(endpoint) => endpoint.as_str().and_then(|url| reqwest::Url::parse(url).ok()).is_some_and(|url|
+            matches!(url.scheme(), "http" | "https") && url.host_str().is_some_and(|host|
+                host == "localhost" || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback()))),
+    }
 }
 
 impl ResourceCatalog {
+    pub fn local_only(mut self) -> Self {
+        self.local_only = true;
+        // The built-in Web connection has no definition here: its loopback,
+        // token-protected endpoint is created per session by `web::prepare`.
+        for entry in self.entries.iter_mut().filter(|entry| entry.available && entry.kind == "mcp" && entry.id != BUILTIN_WEB) {
+            if !local_endpoint(&entry.config) {
+                entry.available = false;
+                entry.problem = Some("Local agents can only reach MCP servers on this computer".into());
+            }
+        }
+        self
+    }
+
     /// Candidate IDs remain visible, including incompatible definitions, so
     /// the selector can explain why a dependency cannot be activated here.
     pub fn for_provider(mut self, provider: crate::agents::Provider) -> Self {
@@ -352,15 +376,27 @@ pub fn catalog_with_homes(home: &Path, config_dir: &Path, codex_home: &Path, roo
             entry.problem = Some("Replaced by another definition of the same name".into());
         }
     }
+    #[cfg(windows)]
+    entries.push(ResourceEntry {
+        id: BUILTIN_WEB.into(), name: "ThingMaker Web".into(), kind: "mcp".into(),
+        description: "Allow this agent to search and read the web using ThingMaker.".into(),
+        group: "builtin".into(), available: true, problem: None, source: "ThingMaker".into(),
+        target: None, mcp_dependencies: vec![], dependency_notes: vec![],
+        runtime_name: "thingmaker-web".into(), config: Value::Null, revision: "1".into(),
+        skill_path: None, bridge_skill: false,
+    });
     entries.sort_by(|a, b| a.id.cmp(&b.id));
     skill_dependencies::annotate(&mut entries);
-    Ok(ResourceCatalog { entries, notes: vec![
+    Ok(ResourceCatalog { entries, local_only: false, notes: vec![
         "Shared skills: .claude, .agents and .codex folders, plus installed Claude plugins. Legacy commands, enterprise/synced skills and cloud connectors are not listed. Skills may depend on tools or syntax specific to their original harness.".into(),
         "Selection controls model-invoked skills and MCP servers. File access, slash commands, plugin hooks and managed policies are separate.".into(),
     ] })
 }
 
+pub const BUILTIN_WEB: &str = "mcp:builtin:thingmaker-web";
+
 pub struct ResolvedResources {
+    pub builtin_web: bool,
     pub skills: Vec<String>,
     pub mcps: BTreeMap<String, Value>,
     pub revision: String,
@@ -386,9 +422,46 @@ pub fn codex_instructions(resources: &ResolvedResources) -> String {
 
 /// Applies one resolved snapshot to the provider launch, returning ownership of
 /// any temporary bridges so the session actor can keep them alive.
-pub fn apply_to_launch(resources: ResolvedResources, launch: &mut crate::agents::AgentLaunch) -> Result<Option<std::sync::Arc<tempfile::TempDir>>, DesktopError> {
+pub fn apply_to_launch(mut resources: ResolvedResources, launch: &mut crate::agents::AgentLaunch) -> Result<Option<std::sync::Arc<tempfile::TempDir>>, DesktopError> {
+    use crate::agents::AgentLaunch;
+    let local_home = match &*launch {
+        AgentLaunch::Claude(options) => options.local.as_ref().map(|local| local.home.as_path()),
+        AgentLaunch::Codex(options) if options.local => options.codex_home.as_deref().and_then(Path::parent),
+        _ => None,
+    };
+    let staged = if let Some(home) = local_home.filter(|_| !resources.skill_sources.is_empty()) {
+        let temp = tempfile::Builder::new().prefix("member-skills-").tempdir_in(home).map_err(|error| DesktopError::io(error.to_string()))?;
+        let mut plugins = Vec::new();
+        let mut names = Vec::new();
+        for (index, skill) in resources.skill_sources.iter_mut().enumerate() {
+            let plugin_name = format!("tm-local-{index}");
+            let plugin = temp.path().join(&plugin_name);
+            let source = skill.path.parent().ok_or_else(|| DesktopError::io("Missing skill directory"))?;
+            let directory = plugin.join("skills").join(source.file_name().ok_or_else(|| DesktopError::io("Invalid skill directory"))?);
+            if temp.path().canonicalize().map_err(|e| DesktopError::io(e.to_string()))?.starts_with(source) {
+                return Err(DesktopError::io("The skill directory contains the local session folder"));
+            }
+            copy_skill_files(source, &directory).map_err(|e| DesktopError::io(format!("Cannot stage {}: {e}", skill.name)))?;
+            skill.path = directory.join("SKILL.md").canonicalize().map_err(|e| DesktopError::io(e.to_string()))?;
+            let manifest = plugin.join(".claude-plugin");
+            std::fs::create_dir(&manifest).and_then(|_| std::fs::write(manifest.join("plugin.json"), json!({"name":plugin_name,"version":"1.0.0"}).to_string())).map_err(|e| DesktopError::io(e.to_string()))?;
+            let text = std::fs::read_to_string(&skill.path).map_err(|e| DesktopError::io(e.to_string()))?;
+            let name = super::skills::parse_frontmatter(&text).name.unwrap_or_else(|| directory.file_name().unwrap_or_default().to_string_lossy().into_owned());
+            names.push(format!("{plugin_name}:{name}"));
+            plugins.push(plugin);
+        }
+        if let AgentLaunch::Claude(options) = launch {
+            options.resource_plugins = plugins;
+            resources.skills = names;
+        }
+        Some(std::sync::Arc::new(temp))
+    } else { None };
     match launch {
         crate::agents::AgentLaunch::Claude(options) => {
+            if staged.is_some() {
+                options.resources = Some((resources.skills, resources.mcps));
+                return Ok(staged);
+            }
             let prepared = prepare_claude_skills(&resources)?;
             if let Some(prepared) = &prepared { options.resource_plugins = prepared.plugins.clone(); }
             options.resources = Some((resources.skills, resources.mcps));
@@ -400,10 +473,27 @@ pub fn apply_to_launch(resources: ResolvedResources, launch: &mut crate::agents:
             options.resources = Some(crate::agents::codex::launch::CodexResources {
                 skills: resources.skill_sources.into_iter().map(|skill| skill.path).collect(), mcps: crate::agents::codex::resources::server_names(resources.mcps),
             });
-            Ok(None)
+            Ok(staged)
         }
         _ => Err(DesktopError::unsupported("This harness does not support member resources")),
     }
+}
+
+fn copy_skill_files(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_skill_files(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), target)?;
+        } else {
+            return Err(std::io::Error::other(format!("unsupported linked or special file: {}", entry.path().display())));
+        }
+    }
+    Ok(())
 }
 
 pub struct PreparedClaudeSkills {
@@ -444,7 +534,12 @@ pub fn prepare_claude_skills(resources: &ResolvedResources) -> Result<Option<Pre
         #[cfg(unix)]
         let linked = std::os::unix::fs::symlink(&target, plugin.join("skills").join(name));
         #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_dir(&target, plugin.join("skills").join(name));
+        let linked = {
+            let destination = plugin.join("skills").join(name);
+            std::os::windows::fs::symlink_dir(&target, &destination).or_else(|error| {
+                if error.raw_os_error() == Some(1314) { copy_skill_files(&target, &destination) } else { Err(error) }
+            })
+        };
         linked.map_err(|_| DesktopError::io("Cannot link the selected skill into its temporary plugin"))?;
         plugins.push(plugin);
     }
@@ -466,6 +561,7 @@ pub fn resolve(catalog: &ResourceCatalog, selection: &ResourceSelection, environ
     }
     for (kind, ids) in [("skill", &selection.skills), ("mcp", &selection.mcps)] {
         for id in ids {
+            if !cfg!(windows) && kind == "mcp" && id == BUILTIN_WEB { continue; }
             let entry = catalog.entries.iter().find(|entry| entry.id == *id && entry.kind == kind && entry.available)
                 .ok_or_else(|| DesktopError::not_ready(format!("Selected resource {id} is missing or disabled. Edit this member's selection.")))?;
             revisions.insert(id, &entry.revision);
@@ -478,9 +574,12 @@ pub fn resolve(catalog: &ResourceCatalog, selection: &ResourceSelection, environ
                     skill_sources.push(SelectedSkill { path, runtime_name: entry.runtime_name.clone(), bridge: entry.bridge_skill, name: entry.name.clone(), description: entry.description.clone() });
                 }
             }
-            else {
+            else if entry.id != BUILTIN_WEB {
                 let mut config = entry.config.clone();
                 expand_environment(&mut config, environment)?;
+                if catalog.local_only && !local_endpoint(&config) {
+                    return Err(DesktopError::not_ready("Local agents can only reach MCP servers on this computer"));
+                }
                 if mcps.insert(entry.runtime_name.clone(), config).is_some() {
                     return Err(DesktopError::conflict("Two selected MCP definitions use the same server name. Select one origin for that server."));
                 }
@@ -490,7 +589,11 @@ pub fn resolve(catalog: &ResourceCatalog, selection: &ResourceSelection, environ
     skills.sort();
     skills.dedup();
     let revision = content_hash(serde_json::to_vec(&json!([revisions, mcps])).unwrap_or_default().as_slice());
-    Ok(ResolvedResources { skills, mcps, revision, skill_sources })
+    let builtin_web = cfg!(windows) && selection.mcps.iter().any(|id| id == BUILTIN_WEB);
+    if builtin_web && mcps.contains_key("thingmaker-web") {
+        return Err(DesktopError::conflict("Choose one definition for thingmaker-web"));
+    }
+    Ok(ResolvedResources { builtin_web, skills, mcps, revision, skill_sources })
 }
 
 fn expand_environment(value: &mut Value, env: &HashMap<String, String>) -> Result<(), DesktopError> {
@@ -521,12 +624,13 @@ fn expand_environment(value: &mut Value, env: &HashMap<String, String>) -> Resul
 /// adapter/SDK versions, rather than assuming unknown versions honor options.
 pub fn check_harness(adapter_script: &Path) -> Result<(), DesktopError> {
     let package = adapter_script.parent().and_then(Path::parent).ok_or_else(|| DesktopError::not_ready("Cannot locate Claude ACP package"))?;
-    for (file, minimum) in [(package.join("package.json"), (0, 106, 0)), (package.join("node_modules/@anthropic-ai/claude-agent-sdk/package.json"), (0, 3, 322))] {
+    let (adapter, sdk) = ((0, 106, 0), (0, 3, 322));
+    for (file, minimum) in [(package.join("package.json"), adapter), (package.join("node_modules/@anthropic-ai/claude-agent-sdk/package.json"), sdk)] {
         let value = read(&file)?;
         let version = value["version"].as_str().unwrap_or("");
         let parts: Vec<u64> = version.split('.').map(|part| part.parse().unwrap_or(0)).collect();
         if parts.len() != 3 || (parts[0], parts[1], parts[2]) < minimum {
-            return Err(DesktopError::not_ready("Custom member resources require Claude ACP 0.106.0+ and Agent SDK 0.3.322+. Update the adapter before starting this member."));
+            return Err(DesktopError::not_ready(format!("Custom member resources require Claude ACP {}.{}.{}+ and Agent SDK {}.{}.{}+. Update the adapter before starting this member.", adapter.0, adapter.1, adapter.2, sdk.0, sdk.1, sdk.2)));
         }
     }
     Ok(())
@@ -586,6 +690,25 @@ mod tests {
         assert!(resolve(&found, &missing, &HashMap::new()).is_err());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn a_web_scout_skill_offers_the_builtin_connection_but_only_selecting_it_enables_web() {
+        let home = tempfile::tempdir().unwrap();
+        let claude = home.path().join(".claude");
+        write(&claude.join("skills/web-scout/SKILL.md"), "---\nname: web-scout\ndescription: Research with web-scout MCP tools.\n---\nUse web_search then web_read.");
+        let found = catalog(home.path(), &claude, None).unwrap().local_only();
+        let skill = found.entries.iter().find(|e| e.id == "skill:user:web-scout").unwrap();
+        assert!(skill.mcp_dependencies.iter().any(|dep| dep.mcp_ids.iter().any(|id| id == BUILTIN_WEB)));
+        let mut chosen = ResourceSelection { skills: vec![skill.id.clone()], mcps: vec![] };
+        let without = resolve(&found, &chosen, &HashMap::new()).unwrap();
+        assert!(!without.builtin_web);
+        chosen.mcps.push(BUILTIN_WEB.into());
+        let with = resolve(&found, &chosen, &HashMap::new()).unwrap();
+        assert!(with.builtin_web);
+        assert!(with.mcps.is_empty(), "the authenticated connection is created per session");
+        assert_ne!(with.revision, without.revision);
+    }
+
     #[test]
     fn plugin_mcps_expand_their_root_and_local_project_servers_override_user_servers() {
         let temp = tempfile::tempdir().unwrap();
@@ -603,8 +726,52 @@ mod tests {
         let selected = ResourceSelection { skills: vec![], mcps: vec!["mcp:local:same".into(), "mcp:art@market:paint".into()] };
         let resolved = resolve(&found, &selected, &HashMap::new()).unwrap();
         assert_eq!(resolved.mcps["same"]["command"], "local");
-        assert_eq!(resolved.mcps["plugin:art:paint"]["args"][0], plugin.join("server.js").to_string_lossy().as_ref());
+        assert_eq!(Path::new(resolved.mcps["plugin:art:paint"]["args"][0].as_str().unwrap()), plugin.join("server.js"));
         assert!(!found.entries.iter().find(|entry| entry.id == "mcp:user:same").unwrap().available);
+    }
+
+    #[test]
+    fn local_resources_are_staged_for_each_harness_and_remote_servers_are_excluded() {
+        use crate::agents::{AgentLaunch, claude::launch::ClaudeLaunchOptions, codex::CodexLaunchOptions, local::{LocalKind, LocalTarget}};
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        write(&home.join(".claude/skills/probe/SKILL.md"), "---\nname: probe\ndescription: Probe\n---\n");
+        write(&home.join(".claude/skills/probe/note.txt"), "fixture");
+        write(&home.join(".claude.json"), r#"{"mcpServers":{"remote":{"type":"http","url":"https://example.test"},"loopback":{"type":"http","url":"http://localhost:8800"}}}"#);
+        let found = catalog(home, &home.join(".claude"), None).unwrap().local_only();
+        assert!(!found.entries.iter().find(|entry| entry.id == "mcp:user:remote").unwrap().available);
+        let selection = ResourceSelection { skills: vec!["skill:user:probe".into()], mcps: vec!["mcp:user:loopback".into()] };
+        let mut claude = ClaudeLaunchOptions::new(home, "node", vec![]);
+        claude.local = Some(LocalTarget { kind: LocalKind::Agent, model: "m".into(), served: "m".into(), window: 16384, home: home.into() });
+        let mut codex = CodexLaunchOptions::new(home, "codex");
+        codex.local = true;
+        codex.codex_home = Some(home.join("codex"));
+        for mut launch in [AgentLaunch::Claude(claude), AgentLaunch::Codex(codex)] {
+            let resources = resolve(&found, &selection, &HashMap::new()).unwrap();
+            let files = apply_to_launch(resources, &mut launch).unwrap().unwrap();
+            assert_eq!(std::fs::read_to_string(files.path().join("tm-local-0/skills/probe/note.txt")).unwrap(), "fixture");
+            match launch {
+                AgentLaunch::Claude(options) => assert_eq!(options.resources.unwrap().0, ["tm-local-0:probe"]),
+                AgentLaunch::Codex(options) => assert_eq!(options.resources.unwrap().skills, [files.path().join("tm-local-0/skills/probe/SKILL.md").canonicalize().unwrap()]),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn local_endpoints_fail_closed_before_and_after_expansion() {
+        let temp = tempfile::tempdir().unwrap();
+        write(&temp.path().join(".claude.json"), r#"{"mcpServers":{"var":{"type":"http","url":"${MCP_URL}"},"bad":{"type":"http","url":"invalid"},"loop":{"type":"http","url":"http://localhost/${PATH}"}}}"#);
+        let mut catalog = catalog(temp.path(), &temp.path().join(".claude"), None).unwrap().local_only();
+        for name in ["var","bad"] {
+            assert!(!catalog.entries.iter().find(|e| e.id == format!("mcp:user:{name}")).unwrap().available);
+        }
+        // Resolution validates the final definition independently of the catalog preview.
+        let entry = catalog.entries.iter_mut().find(|e| e.id == "mcp:user:loop").unwrap();
+        entry.config["url"] = json!("${MCP_URL}");
+        let selection = ResourceSelection { skills: vec![], mcps: vec![entry.id.clone()] };
+        let vars = HashMap::from([("MCP_URL".into(), "https://example.com".into())]);
+        assert!(resolve(&catalog, &selection, &vars).is_err());
     }
 
     #[test]

@@ -3,18 +3,34 @@
  * in a chat, a way on to an agent on the same model.
  */
 import { asConfigOptions, localModelId } from "@thingmaker/contracts";
+import { MemberResources } from "./MemberResources";
 import { api } from "../ipc";
 import { useStore } from "../store";
 import { t } from "../i18n";
 
+export function PendingLocalResources({ sessionId }: { sessionId: string }) {
+  const pending = useStore((s) => s.pendingProvider[sessionId]);
+  const workspace = useStore((s) => s.sessions[sessionId]?.workspaceId);
+  const setPending = useStore((s) => s.setPendingProvider);
+  if (pending?.provider !== "local" || !pending.model?.startsWith("@agent/")) return null;
+  return <details><summary>{t("Skills and connections")}</summary>
+    <MemberResources initialWorkspace={workspace ?? ""} worker={{ name: "", provider: "local", capabilities: [], model: pending.model,
+      ...(pending.resources ? { resources: pending.resources } : {}) }} onChange={(worker) => setPending(sessionId, {
+        provider: "local", ...(worker.model ? { model: worker.model } : {}), ...(worker.resources ? { resources: worker.resources } : {}),
+      })} />
+  </details>;
+}
+
 export function LocalBadge({ sessionId, localChat, configOptions }: { sessionId: string; localChat: boolean; configOptions: unknown }) {
+  const webAvailable = useStore((s) => s.sessions[sessionId]?.snapshot.webAvailable);
   const catalog = useStore((s) => s.providerModels.local);
   const pending = useStore((s) => s.pendingProvider[sessionId]);
   const setPending = useStore((s) => s.setPendingProvider);
   const current = asConfigOptions(configOptions).find((option) => option.configId === "model")?.currentValue;
   const name = typeof current === "string" ? current : "";
-  const agent = localModelId("agent", name);
-  const canBeAgent = localChat && name !== "" && (catalog ?? []).some((model) => model.id === agent);
+  const agent = [localModelId("agent", name), localModelId("agent", name, "codex")]
+    .find((id) => catalog?.some((model) => model.id === id));
+  const canBeAgent = localChat && name !== "" && agent !== undefined;
 
   const toAgent = async () => {
     const confirmed = await api.confirmDialog({
@@ -23,20 +39,20 @@ export function LocalBadge({ sessionId, localChat, configOptions }: { sessionId:
       okLabel: t("Continue as an agent"),
       cancelLabel: t("Stay in the chat"),
     });
-    if (confirmed) setPending(sessionId, { provider: "local", model: agent });
+    if (confirmed && agent) setPending(sessionId, { provider: "local", model: agent });
   };
 
   return (
     <>
-      <span className="chip small chip-private" title={localChat ? t("This chat only talks to Ollama on this computer") : t("This agent runs in a sandbox that can only reach this computer")}>
-        {localChat ? t("Private · on this computer · free") : t("Private · sandboxed · free")}
+      <span className="chip small chip-private" title={localChat ? t("This chat only talks to Ollama on this computer") : t("The model runs on this computer. ThingMaker Web handles web requests when included in the agent’s resources.")}>
+        {localChat || webAvailable === false ? t("Private · on this computer · free") : t("Local · sandboxed · free")}
       </span>
       {canBeAgent && !pending && (
         <button className="button button-small" onClick={() => void toAgent()} title={t("Work on the code with this model, as an agent")} type="button">
           {t("Continue as an agent")}
         </button>
       )}
-      {pending?.provider === "local" && pending.model === agent && (
+      {pending?.provider === "local" && pending.model?.startsWith("@agent/") && (
         <button className="button button-small" onClick={() => setPending(sessionId, null)} type="button">
           {t("Stay in the chat")}
         </button>

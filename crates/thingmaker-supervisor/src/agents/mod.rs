@@ -128,6 +128,7 @@ impl AgentLaunch {
         match self {
             Self::Claude(options) if options.local.is_some() => Provider::Local,
             Self::Claude(_) => Provider::Claude,
+            Self::Codex(options) if options.local => Provider::Local,
             Self::Codex(_) => Provider::Codex,
             Self::Gemini(_) => Provider::Gemini,
         }
@@ -234,15 +235,28 @@ impl AgentLaunch {
     pub fn environment(&self) -> Vec<(String, String)> {
         match self {
             Self::Claude(options) => match &options.local {
-                Some(local) => local.environment(),
+                Some(local) => {
+                    let mut env = local.environment();
+                    if options.resources.as_ref().is_some_and(|(skills, mcps)| !skills.is_empty() || !mcps.is_empty()) {
+                        env.retain(|(key, _)| key != "CLAUDE_CODE_SIMPLE");
+                        env.push(("CLAUDE_CODE_SIMPLE".into(), "0".into()));
+                    }
+                    env
+                },
                 None => options.config_dir.iter().map(|dir| ("CLAUDE_CONFIG_DIR".to_string(), dir.to_string_lossy().into_owned())).collect(),
             },
-            Self::Gemini(_) => vec![(gemini::launch::DISABLE_AUTO_UPDATE.to_string(), "1".to_string())],
-            Self::Codex(options) => options
-                .codex_home
-                .iter()
-                .map(|home| ("CODEX_HOME".to_string(), home.to_string_lossy().into_owned()))
-                .collect(),
+            Self::Gemini(options) => gemini::launch::account_environment(options.account_home.as_deref()),
+            Self::Codex(options) => {
+                let mut env = Vec::new();
+                if let Some(home) = &options.codex_home {
+                    env.push(("CODEX_HOME".into(), home.to_string_lossy().into_owned()));
+                    if cfg!(windows) && options.local && let Some(parent) = home.parent() {
+                        let temp = parent.join("tmp").to_string_lossy().into_owned();
+                        env.extend([("TEMP".into(), temp.clone()), ("TMP".into(), temp)]);
+                    }
+                }
+                env
+            }
         }
     }
 }

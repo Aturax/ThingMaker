@@ -1,3 +1,4 @@
+import { VoiceInput } from "./VoiceInput";
 /**
  * A project's home: one box to start a session, the recent sessions under
  * it, and the rest (what agents read here, the workspace's details) folded
@@ -8,12 +9,16 @@ import { PROVIDERS, PROVIDER_LABELS, parseLocalModel, type Provider, type Sessio
 import { startingProvider, useStore } from "../store";
 import { api } from "../ipc";
 import { OutboxPanel } from "./OutboxPanel";
+import { BrowserLauncher } from "./WebView";
+import { IS_REMOTE } from "../remote/mode";
 import { WipeDialog } from "./WipeDialog";
 import { RenameFolderDialog } from "./RenameFolderDialog";
 import { ProviderMark } from "./ProviderMark";
 import { relative, RowMenu, type Row } from "./Sidebar";
 import { IconArrowUp, IconBranch, IconCheck, IconChevron, IconDots } from "./icons";
 import { t } from "../i18n";
+import { MemberResources } from "./MemberResources";
+import type { MemberResourceSelection } from "@thingmaker/contracts";
 import { localKindLabel } from "../localModels";
 
 /** How many sessions the home lists before "Show all". */
@@ -147,6 +152,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
       {renamingFolder && <RenameFolderDialog onClose={() => setRenamingFolder(false)} workspaceId={workspaceId} />}
 
       <OutboxPanel workspaceId={workspaceId} />
+      {!IS_REMOTE && <BrowserLauncher key={workspaceId} />}
 
       <RecentSessions records={records ?? []} trusted={trusted} workspaceId={workspaceId} />
         </div>
@@ -183,6 +189,9 @@ export function StartBox({ workspaceId, name, trusted, initialPreset, onStarted 
   const [preset, setPreset] = useState<TeamPreset | null>(initialPreset ?? null);
   const input = useRef<HTMLTextAreaElement>(null);
   const chosen = provider ?? startingProvider(providers);
+  const selectedModel = model ?? defaults[chosen]?.model;
+  const localAgent = !preset && chosen === "local" && selectedModel?.startsWith("@agent/");
+  const [resources, setResources] = useState<MemberResourceSelection>();
   const ready = (candidate: Provider) => !!providers?.find((entry) => entry.provider === candidate)?.resolved;
 
   useEffect(() => {
@@ -193,7 +202,7 @@ export function StartBox({ workspaceId, name, trusted, initialPreset, onStarted 
     if (!trusted) return;
     const message = text.trim() ? text : undefined;
     if (preset) void openSessionWithPreset(workspaceId, preset, message);
-    else void openSession(workspaceId, { mode: "new" }, chosen, { ...(model ? { model } : {}), ...(message ? { message } : {}) });
+    else void openSession(workspaceId, { mode: "new" }, chosen, { ...(model ? { model } : {}), ...(message ? { message } : {}), ...(localAgent && resources ? { resources } : {}) });
     setText("");
     onStarted?.();
   };
@@ -219,6 +228,10 @@ export function StartBox({ workspaceId, name, trusted, initialPreset, onStarted 
         rows={2}
         value={text}
       />
+      {localAgent && selectedModel && <details><summary>{t("Skills and connections")}</summary>
+        <MemberResources initialWorkspace={workspaceId} worker={{ name, provider: "local", model: selectedModel, capabilities: [], ...(resources ? { resources } : {}) }} onChange={(worker) => { setModel(worker.model ?? null); setResources(worker.resources); }} />
+      </details>}
+      <VoiceInput key={workspaceId} target={workspaceId} draft={text} input={input} localOnly={chosen === "local"} onChange={setText} disabled={!trusted} />
       <div className="home-start-bar">
         {preset ? (
           <span className="model-chip home-chip-static" title={t("The team decides who leads")}>

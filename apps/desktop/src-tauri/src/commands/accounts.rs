@@ -1,4 +1,4 @@
-//! More than one account per provider (Claude Code, Codex): list, add,
+//! More than one account per provider (Claude Code, Codex, Gemini): list, add,
 //! rename, remove, and pick the active one. See `agents::accounts`.
 //!
 //! The active account applies to sessions started from then on, and to the
@@ -30,6 +30,8 @@ pub struct AccountView {
     /// The person's own folder (`~/.claude`, `~/.codex`).
     pub is_default: bool,
     pub active: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<std::path::PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<ProviderAuthStatus>,
 }
@@ -51,20 +53,29 @@ fn save(state: &AppState, list: &[Account]) -> CommandResult<()> {
 pub async fn accounts_list(provider: Provider, state: State<'_, AppState>) -> CommandResult<Vec<AccountView>> {
     check(provider)?;
     let active = state.active_account(provider);
-    let mut views = vec![AccountView { id: DEFAULT_ACCOUNT.into(), provider, label: String::new(), is_default: true, active: active == DEFAULT_ACCOUNT, auth: None }];
-    views.extend(state.accounts().into_iter().filter(|account| account.provider == provider).map(|account| AccountView { active: active == account.id, is_default: false, auth: None, id: account.id, provider, label: account.label }));
+    let mut views = vec![AccountView { id: DEFAULT_ACCOUNT.into(), provider, label: String::new(), is_default: true, active: active == DEFAULT_ACCOUNT, auth: None, conflicts: Vec::new() }];
+    views.extend(state.accounts().into_iter().filter(|account| account.provider == provider).map(|account| AccountView { active: active == account.id, is_default: false, auth: None, conflicts: Vec::new(), id: account.id, provider, label: account.label }));
     let resolved = match state.resolve_provider(provider) {
         Ok(resolved) => resolved,
         Err(_) => return Ok(views),
     };
-    let folders: Vec<Option<std::path::PathBuf>> = views.iter().map(|view| state.account_folder(provider, Some(&view.id))).collect();
+    let folders: Vec<_> = views.iter().map(|view| state.try_account_folder(provider, Some(&view.id))).collect();
+    if provider == Provider::Gemini {
+        for (view, folder) in views.iter_mut().zip(&folders) {
+            if let Ok(Some(folder)) = folder { view.conflicts = accounts::gemini_conflicts(folder); }
+        }
+    }
+    let gemini_accounts = views.len() > 1;
     // Each answers through its own program run; asked side by side.
     let statuses = tauri::async_runtime::spawn_blocking(move || {
         let threads: Vec<_> = folders
             .into_iter()
             .map(|folder| {
                 let resolved = resolved.clone();
-                std::thread::spawn(move || super::providers::auth_status(&resolved, folder.as_deref()))
+                std::thread::spawn(move || match folder {
+                    Ok(folder) => super::providers::auth_status(&resolved, folder.as_deref(), gemini_accounts),
+                    Err(error) => ProviderAuthStatus { setup_required: None, provider, logged_in: Some(false), method: None, account: None, plan: None, problem: Some(error.message) },
+                })
             })
             .collect();
         threads.into_iter().map(|thread| thread.join().ok()).collect::<Vec<_>>()
@@ -87,11 +98,15 @@ pub fn account_add(provider: Provider, label: String, state: State<'_, AppState>
         return Err(DesktopError::unsupported("give the account a name"));
     }
     let id = format!("acct-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
-    let mut list = state.accounts();
+    let previous = state.accounts();
+    let mut list = previous.clone();
     list.push(Account { id: id.clone(), provider, label: label.clone() });
     save(&state, &list)?;
-    state.account_folder(provider, Some(&id));
-    Ok(AccountView { id, provider, label, is_default: false, active: false, auth: None })
+    if let Err(error) = state.try_account_folder(provider, Some(&id)) {
+        save(&state, &previous)?;
+        return Err(error);
+    }
+    Ok(AccountView { id, provider, label, is_default: false, active: false, auth: None, conflicts: Vec::new() })
 }
 
 #[tauri::command]
@@ -111,21 +126,43 @@ pub fn account_rename(provider: Provider, id: String, label: String, state: Stat
 /// go with it; the main folder they point to is untouched. The default
 /// account cannot be removed.
 #[tauri::command]
-pub async fn account_remove(provider: Provider, id: String, state: State<'_, AppState>) -> CommandResult<()> {
+pub async fn account_remove(provider: Provider, id: String, local_only: Option<bool>, state: State<'_, AppState>) -> CommandResult<Option<String>> {
     check(provider)?;
     if id == DEFAULT_ACCOUNT || !accounts::valid_id(&id) {
         return Err(DesktopError::unsupported("your own account cannot be removed here"));
     }
-    let _ = super::providers::provider_logout(provider, Some(id.clone()), state.clone()).await;
     let folder = accounts::account_folder(&state.data_dir, provider, &id);
-    // Removes links, never what they point to.
-    let _ = std::fs::remove_dir_all(&folder);
+    if provider == Provider::Gemini {
+        if !state.accounts().iter().any(|a| a.provider == provider && a.id == id) {
+            return Err(DesktopError::not_ready("that account is gone"));
+        }
+        let result = remove_gemini(&folder, local_only.unwrap_or(false), async {
+            let resolved = state.resolve_provider(provider).map_err(|e| e.message)?;
+            thingmaker_supervisor::agents::gemini::probe::logout_for_account(&resolved.program, &folder, std::time::Duration::from_secs(15)).await
+        }).await?;
+        if result.is_some() { return Ok(result); }
+    } else {
+        let _ = super::providers::provider_logout(provider, Some(id.clone()), state.clone()).await;
+        let _ = std::fs::remove_dir_all(&folder);
+    }
     let list: Vec<Account> = state.accounts().into_iter().filter(|account| !(account.provider == provider && account.id == id)).collect();
     save(&state, &list)?;
     if state.active_account(provider) == DEFAULT_ACCOUNT {
         let _ = state.with_storage(|s| s.setting_set(accounts::ACTIVE_ACCOUNT_SETTING, provider.as_str(), &DEFAULT_ACCOUNT));
     }
-    Ok(())
+    Ok(None)
+}
+
+async fn remove_gemini(folder: &std::path::Path, local_only: bool, logout: impl Future<Output = Result<(), String>>) -> CommandResult<Option<String>> {
+    use thingmaker_supervisor::agents::gemini::launch::{token_path, legacy_token_path};
+    if !local_only && (token_path(folder).try_exists().map_err(storage_error)? || legacy_token_path(folder).try_exists().map_err(storage_error)?) {
+        if let Err(reason) = logout.await { return Ok(Some(reason)); }
+        if token_path(folder).try_exists().map_err(storage_error)? || legacy_token_path(folder).try_exists().map_err(storage_error)? {
+            return Ok(Some("Antigravity kept the local sign-in token.".into()));
+        }
+    }
+    accounts::remove_gemini_profile(folder).map_err(storage_error)?;
+    Ok(None)
 }
 
 /// Makes an account the one new sessions, status and usage use.
@@ -135,7 +172,37 @@ pub fn account_set_active(provider: Provider, id: String, state: State<'_, AppSt
     if id != DEFAULT_ACCOUNT && !state.accounts().iter().any(|account| account.provider == provider && account.id == id) {
         return Err(DesktopError::not_ready("that account is gone"));
     }
+    state.try_account_folder(provider, Some(&id))?;
     state.with_storage(|s| s.setting_set(accounts::ACTIVE_ACCOUNT_SETTING, provider.as_str(), &id)).map_err(storage_error)?;
-    state.account_folder(provider, Some(&id));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn local_removal_handles_failed_logout_changed_cli_and_conflicting_settings() {
+        for reason in ["revoked grant", "unverified CLI version"] {
+            let dir = tempfile::tempdir().unwrap();
+            let folder = dir.path().join("account");
+            let main = dir.path().join("home/.gemini");
+            std::fs::create_dir_all(&main).unwrap();
+            std::fs::write(main.join("settings.json"), "baseline").unwrap();
+            accounts::share(Provider::Gemini, &main, &folder, dir.path()).unwrap();
+            let token = thingmaker_supervisor::agents::gemini::launch::token_path(&folder);
+            std::fs::write(&token, "fixture").unwrap();
+            let settings = folder.join(".gemini/settings.json");
+            std::fs::remove_file(&settings).unwrap();
+            std::fs::write(settings, "unshared local change").unwrap();
+            std::fs::write(main.join("settings.json"), "main change").unwrap();
+            assert_eq!(remove_gemini(&folder, false, async { Err(reason.to_string()) }).await.unwrap().as_deref(), Some(reason));
+            assert!(token.exists());
+            assert!(remove_gemini(&folder, true, async { panic!("local removal cannot require a working CLI") }).await.unwrap().is_none());
+            assert!(!token.exists());
+            let saved = std::fs::read_dir(&folder).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("gemini-settings.json.saved-")).unwrap();
+            assert_eq!(std::fs::read_to_string(saved.path()).unwrap(), "unshared local change");
+            assert_eq!(std::fs::read_to_string(main.join("settings.json")).unwrap(), "main change");
+        }
+    }
 }

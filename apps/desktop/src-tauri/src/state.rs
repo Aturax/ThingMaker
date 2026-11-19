@@ -46,6 +46,7 @@ pub struct ResolvedProvider {
 }
 
 pub struct AppState {
+    pub web_sessions: Mutex<HashMap<String, Result<crate::commands::web::Connection, String>>>,
     pub storage: Arc<Mutex<Storage>>,
     pub actors: Mutex<HashMap<String, SessionActor>>,
     /// Canonical root per live session id, for worktree cleanup safety.
@@ -63,6 +64,10 @@ pub struct AppState {
     pub home: Option<PathBuf>,
     pub terminals: TerminalManager,
     pub terminal_workspaces: Mutex<HashMap<String, String>>,
+    /// Serializes login terminal creation with renderer reload cleanup.
+    pub auth_terminal_generation: Mutex<u64>,
+    pub auth_terminal_profiles: Mutex<HashMap<String, PathBuf>>,
+    pub account_preparation: Mutex<()>,
     pub data_dir: PathBuf,
     /// Tauri resource directory in packaged builds.
     pub resource_dir: Option<PathBuf>,
@@ -88,6 +93,7 @@ impl AppState {
         tracing::info!(?data_dir, "desktop state initialized");
         let storage = Arc::new(Mutex::new(storage));
         Ok(Self {
+            web_sessions: Mutex::new(HashMap::new()),
             review_caches: Mutex::new(HashMap::new()),
             pending_update: Mutex::new(None),
             storage,
@@ -98,6 +104,9 @@ impl AppState {
             home: std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from),
             terminals: TerminalManager::new(),
             terminal_workspaces: Mutex::new(HashMap::new()),
+            auth_terminal_generation: Mutex::new(0),
+            auth_terminal_profiles: Mutex::new(HashMap::new()),
+            account_preparation: Mutex::new(()),
             data_dir: data_dir.to_path_buf(),
             resource_dir: resource_dir.map(Path::to_path_buf),
             delegation: std::sync::OnceLock::new(),
@@ -170,6 +179,7 @@ impl AppState {
     }
 
     pub fn remove_actor(&self, id: &str) -> Option<SessionActor> {
+        self.web_sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
         self.actor_models.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(id);
         self.actor_roots
             .lock()
@@ -316,20 +326,25 @@ impl AppState {
     /// The settings folder of account `id` (the active one when `None`),
     /// shared with the person's main folder again before it is used. `None`
     /// for the default account, which is the person's own folder.
-    pub fn account_folder(&self, provider: Provider, id: Option<&str>) -> Option<PathBuf> {
+    pub fn try_account_folder(&self, provider: Provider, id: Option<&str>) -> Result<Option<PathBuf>, DesktopError> {
         use thingmaker_supervisor::agents::accounts;
         let id = id.map(str::to_string).unwrap_or_else(|| self.active_account(provider));
-        if id == accounts::DEFAULT_ACCOUNT || !accounts::valid_id(&id) || !accounts::supports_accounts(provider) {
-            return None;
+        if id == accounts::DEFAULT_ACCOUNT || !accounts::supports_accounts(provider) {
+            return Ok(None);
         }
-        let home = self.home.clone()?;
+        if !accounts::valid_id(&id) { return Err(DesktopError::unsupported("invalid account id")); }
+        if !self.accounts().iter().any(|account| account.provider == provider && account.id == id) {
+            return Err(DesktopError::not_ready("that account is gone"));
+        }
+        let home = self.home.clone().ok_or_else(|| DesktopError::not_ready("home directory unavailable"))?;
         let folder = accounts::account_folder(&self.data_dir, provider, &id);
+        let _preparation = self.account_preparation.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(main) = accounts::main_folder(provider, &home)
             && let Err(error) = accounts::share(provider, &main, &folder, &home)
         {
-            tracing::warn!(%error, provider = provider.as_str(), "could not share the main settings with an account");
+            return Err(DesktopError::io(format!("could not prepare the account: {error}")));
         }
-        Some(folder)
+        Ok(Some(folder))
     }
 }
 
@@ -378,5 +393,49 @@ impl StorageHandle {
     pub fn with_storage<T>(&self, f: impl FnOnce(&Storage) -> T) -> T {
         let guard = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         f(&guard)
+    }
+}
+
+#[cfg(test)]
+mod account_tests {
+    use super::*;
+    use thingmaker_supervisor::{agents::accounts, storage::settings::GLOBAL_SCOPE};
+
+    #[test]
+    fn a_broken_gemini_profile_is_an_error_instead_of_the_main_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = AppState::initialize(dir.path(), None).unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        std::fs::write(home.join(".gemini/config"), "not a directory").unwrap();
+        state.home = Some(home);
+        let list = vec![accounts::Account { id: "acct-test".into(), provider: Provider::Gemini, label: "Test".into() }];
+        state.with_storage(|s| s.setting_set(accounts::ACCOUNTS_SETTING, GLOBAL_SCOPE, &list)).unwrap();
+        assert!(state.try_account_folder(Provider::Gemini, Some("acct-test")).is_err());
+        assert!(state.try_account_folder(Provider::Gemini, Some("default")).unwrap().is_none());
+    }
+
+    #[test]
+    fn claude_and_codex_report_unusable_account_folders() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut state = AppState::initialize(dir.path(), None).unwrap();
+            state.home = Some(dir.path().join("home"));
+            let account = accounts::Account { id: "work".into(), provider, label: "Work".into() };
+            state.with_storage(|s| s.setting_set(accounts::ACCOUNTS_SETTING, GLOBAL_SCOPE, &[account])).unwrap();
+            let folder = accounts::account_folder(dir.path(), provider, "work");
+            std::fs::create_dir_all(folder.parent().unwrap()).unwrap();
+            std::fs::write(folder, "not a directory").unwrap();
+            assert!(state.try_account_folder(provider, Some("work")).is_err());
+        }
+    }
+
+    #[test]
+    fn invalid_or_removed_accounts_cannot_fall_back_to_the_main_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::initialize(dir.path(), None).unwrap();
+        for id in ["../default", "acct-removed"] {
+            assert!(state.try_account_folder(Provider::Gemini, Some(id)).is_err());
+        }
     }
 }

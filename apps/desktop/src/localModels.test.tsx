@@ -12,7 +12,7 @@ vi.mock("./ipc", () => ({
   api: new Proxy(calls.api, { get: (target, key: string) => (target[key] ??= vi.fn(async () => undefined)) }),
 }));
 import { api } from "./ipc";
-import { useStore } from "./store";
+import { switchesSession, useStore } from "./store";
 import { freeNotPrivate, isLocalChat } from "./localModels";
 import { suggestModel } from "./teamRoles";
 import { LocalModelsCard } from "./components/LocalModelsCard";
@@ -199,6 +199,25 @@ describe("a local chat", () => {
     // Choosing the chat it already is changes nothing.
     useStore.getState().setPendingProvider("s1", { provider: "local", model: "@chat/qwen3:8b" });
     expect(useStore.getState().pendingProvider.s1).toBeUndefined();
+  });
+
+  it("continues with Codex when it is the only available agent", async () => {
+    const id = "@agent/@codex/qwen3:8b";
+    useStore.setState({ sessions: { s1: { snapshot: { provider:"local", capabilities:{ agentName:"thingmaker-local-chat" } } } },
+      providerModels: { local: [model(id,"qwen3:8b · Codex","Agent")] }, pendingProvider: {} } as never);
+    vi.mocked(api.confirmDialog).mockResolvedValue(true);
+    const options = [{ id:"model", name:"Model", category:"model", type:"select", currentValue:"qwen3:8b", options:[] }];
+    render(<LocalBadge configOptions={options} localChat sessionId="s1" />);
+    fireEvent.click(screen.getByRole("button", { name:"Continue as an agent" }));
+    await waitFor(() => expect(useStore.getState().pendingProvider.s1?.model).toBe(id));
+  });
+
+  it("reuses a local agent with the same model and resources", () => {
+    const choice = { provider: "local" as const, model: "@agent/@codex/qwen", resources: { skills: ["b","a"], mcps: [] } };
+    const session = { snapshot: { provider: "local" as const }, localSetup: choice };
+    expect(switchesSession(session, { ...choice, resources: { skills:["a","b"], mcps:[] } })).toBe(false);
+    expect(switchesSession(session, { ...choice, model:"@agent/qwen" })).toBe(true);
+    expect(switchesSession(session, { ...choice, resources: { skills:[], mcps:[] } })).toBe(true);
   });
 
   it("offers no agent when its model cannot use tools", () => {

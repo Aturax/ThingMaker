@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScreenDevice, ScreenStreamEvent, ScreenTools, ScreenToolsInstall } from "@thingmaker/contracts";
 
-vi.mock("./ipc", () => ({ api: { screenDevices: vi.fn(), screenCapture: vi.fn(), screenStreamStart: vi.fn(), screenStreamStop: vi.fn(), screenStreamAck: vi.fn(), screenStreamHeartbeat: vi.fn(), screenToolsStatus: vi.fn(), screenToolsInstall: vi.fn(), screenToolsCancel: vi.fn() } }));
+vi.mock("./ipc", () => ({ api: { openExternal: vi.fn(), webControl: vi.fn(), screenDevices: vi.fn(), screenCapture: vi.fn(), screenStreamStart: vi.fn(), screenStreamStop: vi.fn(), screenStreamAck: vi.fn(), screenStreamHeartbeat: vi.fn(), screenToolsStatus: vi.fn(), screenToolsInstall: vi.fn(), screenToolsCancel: vi.fn() } }));
 import { api } from "./ipc";
 import { OfficeScreen } from "./components/OfficeScreen";
 
@@ -19,6 +19,44 @@ const toolsInstall = vi.mocked(api.screenToolsInstall);
 const toolsCancel = vi.mocked(api.screenToolsCancel);
 let onVideo: (event: ScreenStreamEvent) => void;
 const frame = "data:image/jpeg;base64,aGVsbG8=";
+it("enables local web access, allows direct input in the shared page", async () => {
+  const handle = { id: "local-1", attachmentGeneration: "1" };
+  let enabled = false;
+  vi.mocked(api.webControl).mockImplementation(async (_, action) => {
+    if (action.kind === "enable") enabled = true;
+    return { enabled, url: "", image: null, revision: 0, activity: "", choices: [] };
+  });
+  render(<OfficeScreen webHandle={handle}>Office scene</OfficeScreen>);
+  for (const label of ["Web", "Allow web access for this local session"]) {
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: label })); });
+  }
+  expect(screen.getByRole("textbox", {name:"Search or enter a URL"})).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+});
+it("shows the pairing code, then reflects Chrome ownership on the next frame", async () => {
+  let connected = false;
+  const handle = { id:"chrome-session", attachmentGeneration:"1" };
+  vi.mocked(api.webControl).mockImplementation(async (_, action) => {
+    if(action.kind === "attachBrowse" && action.key === "catalog") connected = true;
+    return {
+    enabled:true, url:"", image:null, revision:1, activity:"", choices:[],
+    storeUrl:"https://chromewebstore.google.com/detail/browse/mfnicocicmmlkpjnaffgihfjhdgjkdjg",
+    ...(connected ? {chrome:"connected" as const} : {}),
+    ...(action.kind === "pair" ? {pairingCode:"ABCD-1234",relayAddress:"localhost:19988"} : {}),
+    ...(action.kind === "listBrowse" ? {lentTabs:[{key:"catalog",title:"Catalog",url:"https://example.com"}]} : {}),
+  }; });
+  render(<OfficeScreen webHandle={handle}>Office scene</OfficeScreen>);
+  await act(async () => { fireEvent.click(screen.getByRole("button", {name:"Web"})); });
+  vi.mocked(api.openExternal).mockResolvedValue();
+  await act(async () => { fireEvent.click(screen.getByRole("button", {name:"Add to Chrome"})); });
+  expect(api.openExternal).toHaveBeenCalledWith("https://chromewebstore.google.com/detail/browse/mfnicocicmmlkpjnaffgihfjhdgjkdjg");
+  await act(async () => { fireEvent.click(screen.getByRole("button", {name:"Pair OpenCode Browse"})); });
+  expect(screen.getByDisplayValue("ABCD-1234")).toBeTruthy();
+  await act(async () => { fireEvent.click(screen.getByRole("button", {name:"Show lent tabs"})); });
+  await act(async () => { fireEvent.click(screen.getByRole("button", {name:/Catalog ·/})); });
+  expect(screen.queryByDisplayValue("ABCD-1234")).toBeNull();
+  expect(screen.getByText("An agent is controlling your Chrome tab.")).toBeTruthy();
+});
 const tools = (overrides: Partial<ScreenTools> = {}): ScreenTools => ({ missing: [], canInstall: false, manager: null, plan: [], manual: null, ...overrides });
 const wingetPlan = ["winget.exe install --id Genymobile.scrcpy --exact --source winget --scope user --silent --accept-package-agreements --accept-source-agreements --disable-interactivity"];
 const missingScrcpy = tools({ missing: ["scrcpy"], canInstall: true, manager: "winget", plan: wingetPlan });

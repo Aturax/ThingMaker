@@ -54,7 +54,7 @@ with your own sign-in, and never reads, stores or passes on a token.
 | 📊 **Live usage** | Five-hour and weekly windows for Claude and Codex in the sidebar, read from each provider's own program at no cost. |
 | ⚖️ **Ultra-Review** | A panel of models from different providers reviews one pull request (or your branch) on its own, then cross-examines each other's findings with evidence: confirm, refine or challenge, then rebut. A Chair writes the verdict, splits go to you, and the result posts to the PR. Reviewers know each other only by letter. See [Ultra-Review](docs/ultra-review.md). |
 | 🔒 **Local Models** | Models in Ollama on this computer, free and private. **Chat** talks to the model directly, in seconds. **Agent** runs Claude Code's agent on the local model, sandboxed so it reaches only this computer. Download models from the Local Models card; a local lead hires only local helpers. See [docs/local-models.md](docs/local-models.md). |
-| 👥 **Accounts** | Sign in to more than one Claude Code or Codex account and switch between them without signing out, from Providers or the model menu. Every account shares your settings, MCP servers, skills and history; only the sign-in differs. Switching in the model menu moves the current conversation to the other account. |
+| 👥 **Accounts** | Sign in to more than one Claude Code, Codex or Gemini account and switch between them without signing out, from Providers or the model menu. Every account shares your settings, MCP servers, skills and history; only the sign-in differs. Switching in the model menu moves the current conversation to the other account. |
 | 🧭 **Big Thing** | A long-horizon goal runner: drop in a plan document and the agent turns it into milestones and tasks with their dependencies and checks; press Start and it runs to the end on its own — see [Big Thing](#big-thing) below. |
 | 🧠 **Shared memory** | One project memory — decisions, conventions, facts — that the orchestrator, its workers and you read and write (`memory_read`, `memory_write`), plus a live task board. |
 | 🖼️ **Inline images** | Images agents generate or read show up right in the transcript, including Codex's generated images. |
@@ -86,6 +86,25 @@ flowchart LR
 - **Big Thing** is an engine inside the supervisor, not the window: it drives
   sessions through the same actors the tabs attach to and keeps going while
   ThingMaker sits in the menu bar with no window open.
+
+### Share a tab from Chrome
+
+1. In a conversation, open **Web → Add to Chrome** and install [OpenCode Browse](https://chromewebstore.google.com/detail/browse/mfnicocicmmlkpjnaffgihfjhdgjkdjg). Windows x64 includes the Browse 0.1.5 native companion.
+2. If Chrome is not paired yet, choose **Pair OpenCode Browse**. In the extension options open **Advanced**, enter the displayed relay address and code, and click **Connect**. This pairs the browser profile once.
+3. On the desired Chrome tab, click the Browse toolbar icon to lend it. In the conversation click **Show lent tabs** and choose that tab. Give the agent a task in that conversation.
+4. You and the agent can interact with the same tab. Switching Chrome tabs keeps the agent on the tab you chose. Use **Return to built-in browser** to detach the chat. Clicking the Browse toolbar icon again withdraws the tab from Browse itself.
+
+ThingMaker pins the lent Chrome tab to one chat and the site you selected. Choosing another site requires lending it again. The agent can read the main document and use visible controls. You handle controls that require trusted keyboard input and interactions inside embedded frames. Its isolated searches and visual reads continue independently. OpenCode Browse's extension and relay are maintained by Anomaly under the MIT license.
+
+### Shared Web tab
+
+Open **Web** next to **Crew** and **Screen** in a desktop conversation. Claude Code and Codex receive per-session MCP tools for search, citation and navigation, including when their configured model comes from a third-party endpoint. A model must support tool calls. Local agents stay offline by default. Each attachment has its own browser. If you customize the agent’s resources, select **ThingMaker Web** to include web access.
+
+Click the shared page, scroll, type, paste, change a selection or enter an address while the agent works. Both see the current page. Closing the panel keeps the page available to the agent. Stopping the session closes its browser.
+
+The Windows x64 installer includes its own Node.js, Chromium headless shell, MCP libraries and PDF reader. Open **Open web browser** on the home or project screen to search or visit a URL before setting up an AI provider. Agent searches and JavaScript-rendered source reads run in the background and preserve the shared page, including unsaved form input. For charts or diagrams, vision-capable agents can call `web_read` with `screenshot: true` to receive a PNG of the viewport. An optional `scroll_y` selects content below the fold. The address bar searches Bing in the shared page. They require internet access. The private runtime does not use the system Node.js, a developer checkout, Docker or a SearXNG service. Agent-driven browsing requires a configured tool-capable agent.
+
+The shared Web tab and standalone browser are available on Windows x64.
 
 ## Big Thing
 
@@ -159,7 +178,13 @@ which worker did each task, and the project memory.
 - **Codex:** install the [ChatGPT app](https://openai.com/chatgpt/download/)
   (its `codex` is found automatically) or the `codex` CLI, and sign in.
 - **Gemini:** install Google's Antigravity and sign in to its `agy` CLI; the
-  quota is your Google account's, shared with the Antigravity app.
+  quota is your Google account's, shared with the Antigravity app. To add
+  another Google account, choose **Add account** in ThingMaker's Providers
+  panel. Complete Antigravity's setup in the embedded terminal, open its
+  sign-in URL in your browser, paste the returned code, then choose **Done
+  signing in**. Added accounts keep private sign-ins; the main account
+  continues to use the Antigravity app's sign-in. CLI settings, MCP servers,
+  skills and conversation history are shared.
 
 ### 2. Install ThingMaker
 

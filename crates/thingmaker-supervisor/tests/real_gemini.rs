@@ -86,6 +86,50 @@ async fn a_gemini_session_answers_and_resumes() {
     let _ = resumed.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "uses two signed-in Google accounts and two small real model turns"]
+async fn isolated_account_switch_preserves_context_and_clean_tool_environment() {
+    if !enabled() { return; }
+    let folder = PathBuf::from(std::env::var_os("THINGMAKER_REAL_GEMINI_ACCOUNT_HOME").expect("set the additional account's private profile path"));
+    let checked_folder = folder.clone();
+    let (main, additional) = tokio::task::spawn_blocking(move || {
+        let main = thingmaker_supervisor::agents::gemini::probe::read_status(&agy(), Duration::from_secs(30));
+        let additional = thingmaker_supervisor::agents::gemini::probe::read_status_for_account(&agy(), Some(&checked_folder), Duration::from_secs(30));
+        if additional.account.is_none() {
+            eprintln!("additional identity probe: {:?}", thingmaker_supervisor::agents::gemini::quota::read_identity_for_account(&agy(), Some(&checked_folder), Duration::from_secs(30)).err());
+        }
+        eprintln!("identity availability: main={}, additional={}", main.account.is_some(), additional.account.is_some());
+        (main, additional)
+    }).await.unwrap();
+    assert_eq!(main.logged_in, Some(true));
+    assert_eq!(additional.logged_in, Some(true));
+    assert!(main.account.is_some() && additional.account.is_some(), "both provider identities must be available");
+    assert_ne!(main.account, additional.account, "this check requires different Google accounts");
+    let scratch = tempfile::tempdir().unwrap();
+    let mut config = gemini(scratch.path(), None);
+    if let AgentLaunch::Gemini(options) = &mut config.launch {
+        options.account_home = Some(folder);
+        options.permission_mode = PermissionStance::AcceptEdits;
+    }
+    let actor = SessionActor::open(config).await.expect("additional account attached");
+    let conversation = actor.snapshot().await.unwrap().agent_session_id.unwrap();
+    let (phase, reply) = turn(&actor, "Remember the validation marker PR12_ACCOUNT_SWITCH. Run exactly this read-only shell command, then reply only with its output: if [ -z \"${SSH_CONNECTION+x}${SSH_CLIENT+x}${SSH_TTY+x}\" ]; then printf SSH_CLEAN; else printf SSH_LEAK; fi").await;
+    let history = actor.history(0, 10_000).await.unwrap();
+    let _ = actor.stop().await;
+    assert_eq!(phase, TurnPhase::Succeeded);
+    assert!(reply.contains("SSH_CLEAN"), "the real tool environment must contain no synthetic SSH variables");
+    assert!(history.iter().any(|event| matches!(&event.payload,
+        SessionEvent::Update(SessionUpdate::ToolCall(patch)) | SessionEvent::Update(SessionUpdate::ToolCallUpdate(patch))
+        if serde_json::to_string(&patch.raw_input).unwrap().contains("SSH_CONNECTION"))), "the model must actually execute the environment check");
+    let resumed = SessionActor::open(gemini(scratch.path(), Some(conversation))).await.expect("same conversation attached with the main account");
+    let (phase, reply) = turn(&resumed, "What validation marker did I supply in the previous turn? Reply only with that marker.").await;
+    let _ = resumed.stop().await;
+    assert_eq!(phase, TurnPhase::Succeeded);
+    assert!(reply.contains("PR12_ACCOUNT_SWITCH"), "conversation context must survive changing Google accounts");
+    let after = tokio::task::spawn_blocking(move || thingmaker_supervisor::agents::gemini::probe::read_status(&agy(), Duration::from_secs(30))).await.unwrap();
+    assert_eq!(after.account, main.account, "the main account identity must stay unchanged");
+}
+
 struct Launcher;
 
 impl WorkerLauncher for Launcher {

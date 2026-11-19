@@ -183,12 +183,12 @@ export const ORCHESTRATOR_PROVIDERS: readonly Provider[] = ["claude", "codex", "
  * reaches only this computer. A bare name is a chat.
  */
 /**
- * One of a provider's accounts (Claude Code, Codex). The default is the
+ * One of a provider's accounts (Claude Code, Codex, Gemini). The default is the
  * person's own folder; an added one has a folder of its own that shares
  * everything but the sign-in. The active one is used by new sessions.
  */
-export type AccountView = { id: string; provider: Provider; label: string; isDefault: boolean; active: boolean; auth?: ProviderAuthStatus };
-export const ACCOUNT_PROVIDERS: readonly Provider[] = ["claude", "codex"] as const;
+export type AccountView = { id: string; provider: Provider; label: string; isDefault: boolean; active: boolean; conflicts?: string[]; auth?: ProviderAuthStatus };
+export const ACCOUNT_PROVIDERS: readonly Provider[] = ["claude", "codex", "gemini"] as const;
 
 export type LocalKind = "chat" | "agent";
 
@@ -207,10 +207,17 @@ export function isRetiredModel(provider: Provider, model: { id: string; name: st
 }
 export function parseLocalModel(id: string | undefined): { kind: LocalKind; name: string } {
   if (!id) return { kind: "chat", name: "" };
+  if (id.startsWith("@agent/@codex/")) return { kind: "agent", name: id.slice("@agent/@codex/".length) };
   if (id.startsWith("@agent/")) return { kind: "agent", name: id.slice("@agent/".length) };
   return { kind: "chat", name: id.startsWith("@chat/") ? id.slice("@chat/".length) : id };
 }
-export function localModelId(kind: LocalKind, name: string): string {
+export function localAgentHarness(id?: string): "claude" | "codex" | undefined {
+  if (id?.startsWith("@agent/")) return id.startsWith("@agent/@codex/") ? "codex" : "claude";
+  return undefined;
+}
+
+export function localModelId(kind: LocalKind, name: string, harness: "claude" | "codex" = "claude"): string {
+  if (kind === "agent" && harness === "codex") return `@agent/@codex/${name}`;
   return `@${kind}/${name}`;
 }
 export type LocalFit = "fits" | "tight" | "too_big";
@@ -316,6 +323,7 @@ export type BackgroundTask = {
   command?: string;
   description?: string;
   outputPath?: string;
+  canStop?: boolean;
   state: BackgroundTaskState;
   exitCode?: number;
   /** How it ended, in the words of its output's last line. */
@@ -336,6 +344,7 @@ export type EventEnvelope = {
 };
 
 export type Snapshot = {
+  webAvailable?: boolean;
   handle: SessionHandle;
   /** The provider this attachment runs on, and so which account it spends. */
   provider: Provider;
@@ -545,7 +554,7 @@ export type Combo = {
 export const EMPTY_COMBO: Combo = { workers: [], nativeSubagents: false };
 
 /** Who leads a team: a provider, and optionally its model and effort. */
-export type OrchestratorChoice = { provider: Provider; model?: string; effort?: string };
+export type OrchestratorChoice = { resources?: MemberResourceSelection; provider: Provider; model?: string; effort?: string };
 
 /** A saved team: an orchestrator and its workers, ready to start a session with or apply to one. */
 export type TeamPreset = {
@@ -617,6 +626,7 @@ export const JOB_EVENT = "thingmaker://job";
 export type ProviderAuthStatus = {
   provider: Provider;
   loggedIn?: boolean;
+  setupRequired?: boolean;
   method?: string;
   account?: string;
   plan?: string;
@@ -1346,7 +1356,7 @@ export type TerminalEvent = { type: "output"; dataBase64: string } | { type: "ex
 
 export type TerminalOpened = { info: TerminalInfo; workspaceId: string; environmentNote: string };
 
-export type OpenSessionEntry = { handle: SessionHandle; workspaceId: string | null; root: string; agentSessionId: string; /** The main session's handle, for a side session. */ sideOf?: string };
+export type OpenSessionEntry = { localSetup?: LocalSessionSetup; handle: SessionHandle; workspaceId: string | null; root: string; agentSessionId: string; /** The main session's handle, for a side session. */ sideOf?: string };
 
 export type OutboxRecord = {
   requestId: string;
@@ -1639,6 +1649,10 @@ export type NotificationSettings = {
   replySuggestionModel?: string;
   /** Missing means Claude, for settings saved before provider selection. */
   replySuggestionProvider?: Provider;
+  /** Independent of reply suggestions. Empty/unset means no dictation cleanup. */
+  voiceCleanupModel?: string;
+  voiceCleanupProvider?: Provider;
+  voiceInputDevice?: string;
   /** Hold off idle sleep while sessions, Big Things or team jobs work. */
   keepAwake: boolean;
   /** ...on battery too (off by default). */
@@ -1724,10 +1738,27 @@ export type LoginEvent =
   | { type: "url"; url: string }
   | { type: "exited"; status: number | null; success: boolean; cancelled: boolean; timedOut: boolean };
 
-export type OpenResponse = { handle: SessionHandle; desktopSessionId: string; snapshot: Snapshot };
+export type LocalSessionSetup = { model: string; resources?: MemberResourceSelection | null };
+export type OpenResponse = { localSetup?: LocalSessionSetup; handle: SessionHandle; desktopSessionId: string; snapshot: Snapshot };
 
 /** A locally connected device whose screen can be previewed read-only. */
 export type ScreenDevice = { id: string; name: string; platform: "android" | "ios" };
+export type WebFrame = {
+  storeUrl?: string | null; chrome?: "connected" | "disconnected"; pairingCode?: string; relayAddress?: string;
+  lentTabs?: {key:string; title:string; url:string}[];
+  enabled: boolean; activity: string; revision: number; url: string; image: string | null;
+  choices: { label: string; value: string; selected: boolean }[];
+};
+export type WebAction =
+  | { kind: "enable" | "frame" | "close" | "pair" | "unshare" | "listBrowse" }
+  | { kind: "attachBrowse"; key:string; url:string }
+  | { kind: "search"; query: string }
+  | { kind: "open"; url: string }
+  | { kind: "click"; revision: number; x: number; y: number }
+  | { kind: "scroll"; revision: number; x: number; y: number; dy: number }
+  | { kind: "key"; revision: number; key: string }
+  | { kind: "select"; revision: number; value: string }
+  | { kind: "text"; revision: number; text: string };
 export type ScreenStreamEvent = { kind: "frame"; sequence: number; dataUrl: string } | { kind: "error"; message: string };
 /** A tool that live Android video needs. */
 export type ScreenTool = "adb" | "scrcpy" | "ffmpeg";
@@ -1746,6 +1777,8 @@ export type ScreenToolsInstall = { tools: ScreenTools; problem: ScreenToolsProbl
 /** Command names exposed by the Tauri host. */
 export const COMMANDS = {
   screenDevices: "screen_devices",
+  webControl: "web_control",
+  webBrowserOpen: "web_browser_open",
   screenCapture: "screen_capture",
   screenStreamStart: "screen_stream_start",
   screenStreamStop: "screen_stream_stop",
@@ -1759,6 +1792,7 @@ export const COMMANDS = {
   sessionSubscribe: "session_subscribe",
   sessionSnapshot: "session_snapshot",
   sessionBackgroundOutput: "session_background_output",
+  sessionBackgroundStop: "session_background_stop",
   sessionSubmit: "session_submit",
   sessionSteer: "session_steer",
   sessionEnqueue: "session_enqueue",
@@ -1885,6 +1919,7 @@ export const COMMANDS = {
   providersStatus: "providers_status",
   providerSetLocation: "provider_set_location",
   providerLoginStart: "provider_login_start",
+  providerLoginTerminal: "provider_login_terminal",
   providerLoginCancel: "provider_login_cancel",
   providerModels: "provider_models",
   providerQuota: "provider_quota",
@@ -1902,6 +1937,15 @@ export const COMMANDS = {
   workspacePick: "workspace_pick",
   revealInFinder: "reveal_in_finder",
   replySuggest: "reply_suggest",
+  voiceStatus: "voice_status",
+  voicePermission: "voice_permission",
+  voiceRemove: "voice_remove",
+  voiceDownload: "voice_download",
+  voiceCancelDownload: "voice_cancel_download",
+  voiceDevices: "voice_devices",
+  voiceStart: "voice_start",
+  voiceStop: "voice_stop",
+  voiceCleanup: "voice_cleanup",
   revealPath: "reveal_path",
   quickLook: "quick_look",
   settingsGet: "settings_get",

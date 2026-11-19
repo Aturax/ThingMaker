@@ -51,6 +51,25 @@ it("selects a snapshot of a group and reports missing imported references", asyn
   await waitFor(() => expect(api.memberResources).toHaveBeenLastCalledWith("project", "claude"));
 });
 
+it.each([["@agent/gemma", "claude"], ["@agent/@codex/gemma", "codex"]])("loads the selected local harness catalog for %s", async (model, harness) => {
+  render(<Editor worker={{ ...initial, provider: "local", model, resources: { skills: [], mcps: [] } }} />);
+  fireEvent.click(await screen.findByRole("checkbox", { name: "art" }));
+  expect(api.memberResources).toHaveBeenCalledWith(null, harness, true);
+  expect(latest.resources?.skills).toEqual(["skill:user:art"]);
+});
+
+it("changes a local agent's harness without losing its model or selected resources", async () => {
+  useStore.setState({ providerModels: { local: [{ id: "@agent/library/gemma:12b" }, { id: "@agent/@codex/library/gemma:12b" }] } } as never);
+  render(<Editor worker={{ ...initial, provider: "local", model: "@agent/library/gemma:12b", resources: { skills: ["skill:user:art"], mcps: [] } }} />);
+  await screen.findByRole("checkbox", { name: "art" });
+  fireEvent.change(screen.getByLabelText("Harness"), { target: { value: "codex" } });
+  await waitFor(() => expect(api.memberResources).toHaveBeenLastCalledWith(null, "codex", true));
+  expect(latest.model).toBe("@agent/@codex/library/gemma:12b");
+  expect(latest.resources?.skills).toEqual(["skill:user:art"]);
+  fireEvent.change(screen.getByLabelText("Harness"), { target: { value: "claude" } });
+  expect(latest.model).toBe("@agent/library/gemma:12b");
+});
+
 it("preserves a policy when switching to another provider until explicitly restored", () => {
   render(<Editor worker={{ ...initial, provider: "gemini", resources: { skills: [], mcps: [] } }} />);
   expect(screen.getByRole("alert").textContent).toContain("requires Claude Code or Codex");

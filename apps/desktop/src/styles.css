@@ -7970,13 +7970,10 @@ html[data-platform="android"] { --traffic-lights: 8px; --titlebar: 52px; height:
   box-shadow: 0 0 0 2px var(--panel);
 }
 
-.badge-dot-running {
+.tab-icon .badge-dot-running {
   background: var(--ok);
 }
 
-.badge-dot-ended {
-  background: var(--muted);
-}
 
 .bg-tasks {
   width: 440px;
@@ -8008,7 +8005,31 @@ html[data-platform="android"] { --traffic-lights: 8px; --titlebar: 52px; height:
   gap: 2px;
 }
 
+.bg-tasks-group {
+  margin: 8px 6px 2px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bg-task-controls {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.bg-task-stop {
+  flex: none;
+  margin-top: 6px;
+}
+
+.bg-task-error {
+  margin: 0 6px 6px;
+  color: var(--error);
+}
+
 .bg-task-head {
+  flex: 1;
+  min-width: 0;
   width: 100%;
   display: flex;
   align-items: flex-start;
@@ -10872,3 +10893,15 @@ html[data-platform="android"] { --traffic-lights: 8px; --titlebar: 52px; height:
 .main-pane .session-panel {
   max-width: none;
 }
+
+/* Desktop dictation: review stays separate from the live composer. */
+.voice-input { width: 100%; margin: 6px 0; }
+.voice-input .row { gap: 6px; align-items: center; }
+.voice-input button svg { vertical-align: middle; margin-right: 5px; }
+.voice-recording { color: #e96565; }
+.voice-review { margin-top: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; }
+.voice-review textarea { display: block; width: 100%; margin: 6px 0; }
+.voice-input meter { width: 64px; height: 12px; }
+
+/* The provider sign-in TUI needs space inside the compact auth drawer. */
+.provider-login-terminal .terminal-host { flex: 0 0 auto; height: 420px; min-height: 300px; }

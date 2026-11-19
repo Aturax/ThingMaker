@@ -30,9 +30,9 @@ pub(crate) fn local_address(value: Option<&str>) -> String {
 pub const ADDRESS_ENV: &str = "THINGMAKER_OLLAMA_ADDRESS";
 
 fn is_this_computer(address: &str) -> bool {
-    let rest = address.strip_prefix("http://").unwrap_or("");
-    let host = rest.split(['/', ':']).next().unwrap_or("");
-    matches!(host, "127.0.0.1" | "localhost")
+    reqwest::Url::parse(address).is_ok_and(|url| url.scheme() == "http"
+        && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
+        && url.username().is_empty() && url.password().is_none())
 }
 
 /// What a derived copy's name carries, so it can be hidden and traced back.
@@ -146,6 +146,13 @@ pub fn base_name(name: &str) -> &str {
         Some(at) => name[..at].trim_end_matches(['-', ':']),
         None => name,
     }
+}
+
+/// The non-stateful Responses endpoint was introduced in Ollama 0.13.3.
+pub fn supports_responses(version: &str) -> bool {
+    let mut parts = version.trim().split('.');
+    let mut next = || parts.next().and_then(|part| part.parse::<u64>().ok());
+    matches!((next(), next(), next()), (Some(a), Some(b), Some(c)) if (a, b, c) >= (0, 13, 3)) && parts.next().is_none()
 }
 
 pub struct Ollama {
@@ -297,11 +304,16 @@ impl Ollama {
     /// A bounded, tool-free completion for small UI helpers. Uses the short
     /// request client's timeout rather than the unbounded streaming client.
     pub fn short_reply(&self, model: &str, instruction: &str, input: &str) -> Result<String, String> {
+        self.bounded_reply(model, instruction, input, 160)
+    }
+
+    /// Longer tool-free text transformations (dictation), still bounded and local-only.
+    pub fn bounded_reply(&self, model: &str, instruction: &str, input: &str, max_tokens: u32) -> Result<String, String> {
         if is_cloud(model) { return Err("reply suggestions require a local model".into()); }
         let result = self.post("/api/chat", &json!({
             "model": model, "stream": false, "think": false, "format": "json",
             "messages": [{"role":"system", "content":instruction}, {"role":"user", "content":input}],
-            "options": {"num_predict": 160}
+            "options": {"num_predict": max_tokens.clamp(1, 4096)}
         }))?;
         result.get("message").and_then(|message| message.get("content")).and_then(Value::as_str)
             .map(str::to_string).ok_or_else(|| "Ollama returned no reply".into())
@@ -463,6 +475,13 @@ mod tests {
         assert_eq!(client.short_reply("test-model", "instruction", "three messages").unwrap(), "{\"reply\":\"Continue\"}");
         assert!(client.short_reply("model:cloud", "instruction", "three messages").is_err());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn responses_requires_ollama_0_13_3() {
+        for (v, expected) in [("0.13.2",false),("0.13.3",true),("1.0.0",true),("unknown",false)] {
+            assert_eq!(supports_responses(v),expected);
+        }
     }
 
     #[test]

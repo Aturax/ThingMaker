@@ -94,6 +94,18 @@ pub fn run() {
     static LOG_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuard> = std::sync::OnceLock::new();
 
     let app = tauri::Builder::default()
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+                && let Some(state) = webview.try_state::<state::AppState>()
+            {
+                let mut sessions = state.web_sessions.lock().unwrap_or_else(|e| e.into_inner());
+                for (_, session) in sessions.extract_if(|id, _| id.starts_with("browser-")) {
+                    if let Ok(session) = session {
+                        tauri::async_runtime::spawn(async move { session.lock().await.close().await; });
+                    }
+                }
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -117,6 +129,7 @@ pub fn run() {
             let resource_dir = app.path().resource_dir().ok();
             let state = state::AppState::initialize(&data_dir, resource_dir.as_deref())
                 .map_err(|error| format!("could not initialize desktop state: {error}"))?;
+            app.manage(std::sync::Arc::new(thingmaker_voice::Service::new(&data_dir)));
             app.manage(state);
             app.manage(commands::screen_stream::ScreenStreams::default());
             titles::set_app(app.handle());
@@ -154,9 +167,26 @@ pub fn run() {
             tray.build(app)?;
             Ok(())
         })
+        .on_page_load(|window, payload| {
+            // React state is gone after navigation/reload. A sign-in process
+            // must not outlive the renderer that owns its terminal.
+            if window.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+                && let Some(state) = window.try_state::<state::AppState>()
+            {
+                let mut generation = state.auth_terminal_generation.lock().unwrap_or_else(|p| p.into_inner());
+                *generation += 1;
+                state.terminals.close_private();
+                state.auth_terminal_profiles.lock().unwrap_or_else(|p| p.into_inner()).clear();
+            }
+        })
         .on_window_event(|window, event| {
             if window.label() != "main" {
                 return;
+            }
+            if matches!(event, WindowEvent::CloseRequested { .. } | WindowEvent::Focused(false))
+                && let Some(voice) = window.app_handle().try_state::<std::sync::Arc<thingmaker_voice::Service>>()
+            {
+                voice.cancel_capture();
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle().clone();
@@ -214,6 +244,7 @@ pub fn run() {
             commands::session::session_subscribe,
             commands::session::session_snapshot,
             commands::session::session_background_output,
+            commands::session::session_background_stop,
             commands::session::session_submit,
             commands::session::session_steer,
             commands::session::session_enqueue,
@@ -228,6 +259,8 @@ pub fn run() {
             commands::session::session_cancel,
             commands::session::session_set_config_option,
             commands::session::session_stop,
+            commands::web::web_control,
+            commands::web::web_browser_open,
             commands::session::session_list_open,
             commands::session::session_history,
             commands::session::session_token_usage,
@@ -381,6 +414,7 @@ pub fn run() {
             commands::providers::providers_status,
             commands::providers::provider_set_location,
             commands::providers::provider_login_start,
+            commands::providers::provider_login_terminal,
             commands::providers::provider_login_cancel,
             commands::providers::provider_models,
             commands::providers::provider_quota,
@@ -396,6 +430,15 @@ pub fn run() {
             commands::delegation::delegation_retry_policy_get,
             commands::delegation::delegation_retry_policy_set,
             commands::suggestions::reply_suggest,
+            commands::voice::voice_status,
+            commands::voice::voice_permission,
+            commands::voice::voice_remove,
+            commands::voice::voice_download,
+            commands::voice::voice_cancel_download,
+            commands::voice::voice_devices,
+            commands::voice::voice_start,
+            commands::voice::voice_stop,
+            commands::voice::voice_cleanup,
             commands::app::settings_get,
             commands::app::settings_set,
             commands::app::app_hide_to_tray,

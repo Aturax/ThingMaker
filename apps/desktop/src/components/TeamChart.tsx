@@ -382,7 +382,7 @@ export function TeamChart({ orchestrator, combo, onChange }: { orchestrator: Orc
     if (!picking) return;
     if (picking.kind === "lead") {
       const effort = orchestrator.effort && model?.efforts.includes(orchestrator.effort) ? orchestrator.effort : roleEffort(null, model);
-      onChange({ provider, ...(model ? { model: model.id } : {}), ...(effort ? { effort } : {}) }, combo);
+      onChange({ provider, ...(provider === "local" && orchestrator.resources ? { resources: orchestrator.resources } : {}), ...(model ? { model: model.id } : {}), ...(effort ? { effort } : {}) }, combo);
       setSelected("lead");
     } else if (picking.kind === "add") {
       const worker = roleWorker(pickRole, provider, model, workers.map((entry) => entry.name), roleLabel(pickRole));
@@ -544,6 +544,8 @@ export function TeamChart({ orchestrator, combo, onChange }: { orchestrator: Orc
               />
             </div>
           </div>
+          {orchestrator.provider === "local" && orchestrator.model?.startsWith("@agent/") && <MemberResources
+            worker={{ ...orchestrator, name: "", capabilities: [] }} onChange={({ name: _name, capabilities: _capabilities, ...choice }) => onChange(choice, combo)} />}
           <label className="small row">
             <input checked={combo.nativeSubagents} onChange={(event) => onChange(orchestrator, { ...combo, nativeSubagents: event.target.checked })} type="checkbox" />
             {t("It may also start its own {provider} subagents", { provider: PROVIDER_LABELS[orchestrator.provider] })}

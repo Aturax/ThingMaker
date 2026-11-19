@@ -5,9 +5,11 @@
 
 pub mod app;
 pub mod screen;
+pub mod web;
 pub mod screen_stream;
 pub mod screen_tools;
 pub mod suggestions;
+pub mod voice;
 pub mod artifacts;
 pub mod attachments;
 pub mod delegation;
@@ -26,6 +28,8 @@ pub mod support;
 pub mod terminal;
 pub mod ultrareview;
 pub mod local;
+#[cfg(windows)]
+mod local_mcp;
 pub mod accounts;
 pub mod update;
 pub mod workspace;

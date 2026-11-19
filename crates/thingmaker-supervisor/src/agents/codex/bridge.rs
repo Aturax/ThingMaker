@@ -331,7 +331,9 @@ impl CodexBridge {
             state.thread_id = Some(thread_id.clone());
             state.default_model = result.get("model").and_then(Value::as_str).map(str::to_string);
         }
-        if let Ok(list) = inner.codex.request("model/list", json!({ "limit": 100 }), timeout).await {
+        if inner.launch.local {
+            inner.state().models = vec![json!({"id": model})];
+        } else if let Ok(list) = inner.codex.request("model/list", json!({ "limit": 100 }), timeout).await {
             inner.state().models = list.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
         }
         if resume {
@@ -487,7 +489,12 @@ fn mcp_config(servers: Option<&Value>) -> Option<Value> {
     for server in servers {
         let Some(name) = server.get("name").and_then(Value::as_str) else { continue };
         let entry = if let Some(url) = server.get("url").and_then(Value::as_str) {
-            json!({ "url": url })
+            let headers: Map<String, Value> = server["headers"].as_array().into_iter().flatten()
+                .filter_map(|pair| Some((pair["name"].as_str()?.to_owned(), pair["value"].as_str()?.into())))
+                .collect();
+            json!({ "url": url, "http_headers": headers,
+                "startup_timeout_sec": server.get("startup_timeout_sec").cloned().unwrap_or(json!(30)),
+                "tool_timeout_sec": server.get("tool_timeout_sec").cloned().unwrap_or(json!(SESSION_TOOL_TIMEOUT_SECS)) })
         } else {
             let env: Map<String, Value> = server
                 .get("env")
@@ -984,7 +991,15 @@ mod tests {
         let config = mcp_config(Some(&json!([{"name": "thingmaker", "command": "/bin/thingmaker-mcp", "args": ["--session", "s"], "env": [{"name": "TOKEN", "value": "t"}]}]))).unwrap();
         assert_eq!(config["mcp_servers.thingmaker"]["command"], "/bin/thingmaker-mcp");
         assert_eq!(config["mcp_servers.thingmaker"]["env"]["TOKEN"], "t");
+        let http = mcp_config(Some(&json!([{"name":"relay","url":"http://localhost/mcp",
+            "headers":[{"name":"Authorization","value":"Bearer test"}]}]))).unwrap();
+        assert_eq!(http["mcp_servers.relay"]["http_headers"]["Authorization"], "Bearer test");
+        assert_eq!(http["mcp_servers.relay"]["startup_timeout_sec"], 30);
+        assert_eq!(http["mcp_servers.relay"]["tool_timeout_sec"], SESSION_TOOL_TIMEOUT_SECS);
         assert_eq!(mcp_config(Some(&json!([]))), None);
+        let web = mcp_config(Some(&json!([{"name":"thingmaker-web","url":"http://127.0.0.1:1234/mcp",
+            "headers":[{"name":"Authorization","value":"Bearer local-test"}]}]))).unwrap();
+        assert_eq!(web["mcp_servers.thingmaker-web"]["http_headers"]["Authorization"], "Bearer local-test");
     }
 
     #[test]
