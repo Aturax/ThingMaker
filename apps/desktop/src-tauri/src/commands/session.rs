@@ -363,9 +363,12 @@ fn restore_setup(storage: &Storage, recorded: Option<&SessionRecord>, model: Opt
     if row.provider == Provider::Local && let Some(saved) = storage.setting_get::<LocalSessionSetup>("localSessionSetup", &row.id).map_err(storage_error)? {
         return Ok((Some(saved.model), saved.resources));
     }
-    let selection = storage.session_resources(&row.id).map_err(storage_error)?.unwrap_or_else(|| {
-        requested.or_else(|| matches!(row.provider, Provider::Claude | Provider::Codex).then(ResourceSelection::default))
-    });
+    // No saved policy (a session from before policies were kept, or a row
+    // made by pin, rename or archive) means what it always meant: inherit
+    // the user's and the project's skills and MCP servers. Treating it as an
+    // empty selection would strip every older session on its next resume,
+    // and save that for good.
+    let selection = storage.session_resources(&row.id).map_err(storage_error)?.unwrap_or(requested);
     Ok((model, selection))
 }
 
@@ -1335,7 +1338,8 @@ mod recovery_tests {
                 assert_eq!(policy.as_ref(), Some(&expected));
             }
             let old = db.session_by_agent_id(&dest, id).unwrap().unwrap();
-            assert_eq!(restore_setup(&db, Some(&old), None, None).unwrap().1, Some(ResourceSelection::default()));
+            // An older row with no saved policy inherits, as before.
+            assert_eq!(restore_setup(&db, Some(&old), None, None).unwrap().1, None);
             // Legacy Big Thing resumes can provide their saved team policy.
             assert_eq!(restore_setup(&db, Some(&old), None, Some(expected.clone())).unwrap().1, Some(expected.clone()));
             let inherited = db.session_upsert_with_resources(&dest, id, SessionOrigin::Desktop, old.provider, None).unwrap();

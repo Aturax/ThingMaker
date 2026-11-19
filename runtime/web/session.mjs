@@ -26,13 +26,15 @@ let browser, launching, context, page;
 
 let revision = 0;
 let lastDocumentState;
-// Count changes in every document, including same-URL dialogs, new controls,
-// focus moves and scrolls that change what a screenshot click would hit.
+// Count the changes that move what a screenshot click would hit: elements
+// added or removed (a dialog, new controls), scrolling and resizing. Text,
+// attribute and focus changes are left out: live timestamps, carousels and
+// spinners change those constantly, and every click would be refused.
 function trackDocument() {
   let changed = 0;
   const bump = () => { changed++; };
-  new MutationObserver(bump).observe(document, {subtree:true, childList:true, attributes:true, characterData:true});
-  for (const type of ["focusin", "focusout", "scroll", "resize"]) {
+  new MutationObserver(bump).observe(document, {subtree:true, childList:true});
+  for (const type of ["scroll", "resize"]) {
     window.addEventListener(type, bump, true);
   }
   Object.defineProperty(window, "__thingmakerFrameRevision", { get: () => changed });
@@ -41,8 +43,9 @@ function trackDocument() {
 async function currentRevision() {
   const current = page;
   if (current && !current.isClosed()) {
-    const state = JSON.stringify(await Promise.all(current.frames().map(frame =>
-      frame.evaluate(() => window.__thingmakerFrameRevision))));
+    // The top document only: ad and widget frames change on their own, and
+    // one detaching mid-check must not break input.
+    const state = JSON.stringify(await current.mainFrame().evaluate(() => window.__thingmakerFrameRevision).catch(() => null));
     if (state !== lastDocumentState) {
       lastDocumentState = state;
       revision++;
@@ -93,7 +96,7 @@ async function open(target) {
     context.on("page", next => {
       page = next;
       revision++;
-      next.on("framenavigated", () => { if (page === next) revision++; });
+      next.on("framenavigated", (navigated) => { if (page === next && navigated === next.mainFrame()) revision++; });
       next.on("close", () => { if (page === next) page = context.pages().at(-1); revision++; });
     });
   }
@@ -412,7 +415,11 @@ async function desktop(cmd) {
     if (cmd.kind === "open") await open(cmd.url);
     else if (cmd.kind === "search") await open(searchUrl(cmd.query));
     else {
-      if (!page || cmd.revision !== await currentRevision()) throw Error("Page changed. Try again on the current frame.");
+      if (!page) throw Error("Page changed. Try again on the current frame.");
+      // A click lands where the frame showed something, so it must be the
+      // frame the person saw. Keys, text and a menu choice go to what has
+      // focus, and typing changes the page itself, so they are not refused.
+      if ((cmd.kind === "click" || cmd.kind === "scroll") && cmd.revision !== await currentRevision()) throw Error("Page changed. Try again on the current frame.");
       if (cmd.kind === "click") await page.mouse.click(cmd.x, cmd.y);
       else if (cmd.kind === "scroll") { await page.mouse.move(cmd.x, cmd.y); await page.mouse.wheel(0,cmd.dy); }
       else if (cmd.kind === "key") await page.keyboard.press(cmd.key);

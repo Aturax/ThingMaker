@@ -117,8 +117,9 @@ test("user and agent interact with the same live page without switching control"
     const before = await ui({kind:"open",url:url+"/dynamic"});
     releaseMutation();
     await mutated;
-    const staleText = await rawUi({kind:"text",text:"stale",revision:before.revision});
-    assert.match(staleText.error,/Page changed/);
+    // The page replaced its controls: a click aimed at the old frame is refused.
+    const staleClick = await rawUi({kind:"click",x:10,y:10,revision:before.revision});
+    assert.match(staleClick.error,/Page changed/);
     const fresh = await ui({kind:"frame"});
     await ui({kind:"text",text:"fresh",revision:fresh.revision});
     assert.match((await call("web_page")).content[0].text,/fresh/);
