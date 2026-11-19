@@ -10905,3 +10905,150 @@ html[data-platform="android"] { --traffic-lights: 8px; --titlebar: 52px; height:
 
 /* The provider sign-in TUI needs space inside the compact auth drawer. */
 .provider-login-terminal .terminal-host { flex: 0 0 auto; height: 420px; min-height: 300px; }
+
+/* ---------- Quick chats ---------- */
+
+/* Before the first message: the question in the middle, the composer below. */
+.quick-home {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-bottom: 10vh;
+}
+
+.quick-home-body {
+  text-align: center;
+  padding: 0 24px 18px;
+}
+
+.quick-home-body h1 {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.quick-home-body p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.quick-home-composer {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 clamp(16px, 5vw, 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Below the middle of the window there is no room under the box: menus open upwards. */
+.quick-home-composer .context-menu.home-choice-menu {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+
+/* The Temporary switch: round, with its name in a pill on hover. */
+.temporary-chat-button {
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--panel-2);
+  color: var(--text-2);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.temporary-chat-button:hover {
+  color: var(--text);
+  background: var(--panel-3);
+}
+
+.temporary-chat-button.on {
+  color: var(--bg);
+  background: var(--text);
+  border-color: var(--text);
+}
+
+.temporary-chat-button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.temporary-chat-button::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  white-space: nowrap;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: var(--panel-3);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 3px);
+  transition: opacity 120ms, transform 120ms;
+}
+
+.temporary-chat-button:hover::after,
+.temporary-chat-button:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.temporary-chat-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.temporary-chat-note svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.temporary-chat-note strong {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.quick-temporary-mark {
+  display: inline-flex;
+  flex: none;
+  margin-left: 6px;
+  color: var(--muted);
+  vertical-align: -2px;
+}
+
+.context-menu .context-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+.context-menu > .context-sep:first-child {
+  display: none;
+}
+
+.context-item.context-danger {
+  color: var(--error);
+}

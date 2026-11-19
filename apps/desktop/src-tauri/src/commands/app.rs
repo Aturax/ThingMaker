@@ -159,6 +159,11 @@ pub fn show_main_window(app: &AppHandle) {
 
 /// Stops every attached helper within a bounded budget, then exits.
 pub async fn quit_and_stop(app: AppHandle, stop_sessions: bool) {
+    // Temporary quick chats go with the app, whichever way it quits; any
+    // left by a crash are deleted at the next start.
+    if let Some(state) = app.try_state::<AppState>() {
+        let _ = tokio::time::timeout(Duration::from_secs(20), super::quick::delete_temporary(&state, false)).await;
+    }
     if stop_sessions
         && let Some(state) = app.try_state::<AppState>()
     {

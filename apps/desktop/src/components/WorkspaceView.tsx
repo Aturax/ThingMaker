@@ -20,6 +20,7 @@ import { t } from "../i18n";
 import { MemberResources } from "./MemberResources";
 import type { MemberResourceSelection } from "@thingmaker/contracts";
 import { localKindLabel } from "../localModels";
+import { TemporaryChatButton, TemporaryChatNote } from "./TemporaryChat";
 
 /** How many sessions the home lists before "Show all". */
 const RECENT = 8;
@@ -63,6 +64,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
   const records = useStore((s) => s.records[workspaceId]);
   const workspace = useStore((s) => s.workspaces.find((entry) => entry.id === workspaceId));
   const repo = useStore((s) => s.repoInfo[workspaceId]);
+  const quick = useStore((s) => s.quickChats.some((chat) => chat.workspaceId === workspaceId));
   const removeWorkspace = useStore((s) => s.removeWorkspace);
   const setError = useStore((s) => s.setError);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -85,6 +87,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
   }
 
   const trusted = inspection.record.trustState === "trusted_local" && !inspection.trustStale;
+  if (quick) return <QuickChatHome trusted={trusted} workspaceId={workspaceId} />;
   const root = inspection.identity.canonicalRoot;
   const name = (workspace?.displayPath ?? root).split(/[\\/]/).filter(Boolean).pop() ?? root;
   const kind = inspection.isGitRepository ? (inspection.isUnityProject ? t("Git · Unity") : t("Git")) : inspection.isUnityProject ? t("Unity") : t("Folder");
@@ -170,12 +173,45 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
  * or a team, are chips as in a session; what is written goes out as soon as
  * the agent is ready.
  */
+/** A quick chat before its first message: a question and the composer. */
+function QuickChatHome({ workspaceId, trusted }: { workspaceId: string; trusted: boolean }) {
+  return (
+    <div className="panel quick-home">
+      <div className="quick-home-body">
+        <h1>{t("What's on your mind?")}</h1>
+        <p className="muted">{t("A quick chat outside any project. It gets an empty folder of its own.")}</p>
+      </div>
+      <div className="quick-home-composer">
+        <TemporaryChatNote workspaceId={workspaceId} />
+        <StartBox name={t("this chat")} placeholder={t("Ask anything")} quick trusted={trusted} workspaceId={workspaceId} />
+      </div>
+    </div>
+  );
+}
+
 /**
  * The project's composer: a prompt, a provider and model or a team, and send.
  * The first-run guide uses it too, starting on the team it picked and told
  * when a session starts.
  */
-export function StartBox({ workspaceId, name, trusted, initialPreset, onStarted }: { workspaceId: string; name: string; trusted: boolean; initialPreset?: TeamPreset | null; onStarted?: () => void }) {
+export function StartBox({
+  workspaceId,
+  name,
+  trusted,
+  initialPreset,
+  onStarted,
+  placeholder,
+  quick,
+}: {
+  workspaceId: string;
+  name: string;
+  trusted: boolean;
+  initialPreset?: TeamPreset | null;
+  onStarted?: () => void;
+  placeholder?: string;
+  /** A quick chat: no team choice, and the Temporary switch in the bar. */
+  quick?: boolean;
+}) {
   const providers = useStore((s) => s.providers);
   const presets = useStore((s) => s.teamPresets);
   const defaults = useStore((s) => s.sessionDefaults);
@@ -223,7 +259,7 @@ export function StartBox({ workspaceId, name, trusted, initialPreset, onStarted 
         disabled={!trusted}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={onKeyDown}
-        placeholder={trusted ? t("What do you want to work on in {name}?", { name }) : t("Trust this workspace to start sessions here")}
+        placeholder={placeholder ?? (trusted ? t("What do you want to work on in {name}?", { name }) : t("Trust this workspace to start sessions here"))}
         ref={input}
         rows={2}
         value={text}
@@ -248,7 +284,8 @@ export function StartBox({ workspaceId, name, trusted, initialPreset, onStarted 
             provider={chosen}
           />
         )}
-        <TeamChoice onEdit={() => setView({ kind: "teams" })} onPick={setPreset} preset={preset} presets={presets} />
+        {quick ? <span className="composer-spacer" /> : <TeamChoice onEdit={() => setView({ kind: "teams" })} onPick={setPreset} preset={preset} presets={presets} />}
+        {quick && <TemporaryChatButton workspaceId={workspaceId} />}
         <button aria-label={t("Start session")} className="send-button send-round home-start-send" disabled={!canStart} onClick={start} title={t("Start session")} type="button">
           <IconArrowUp size={14} />
         </button>

@@ -45,6 +45,7 @@ import { QueueStrip } from "./QueueStrip";
 import { ProviderMark } from "./ProviderMark";
 import { IconAgents, IconArrowUp, IconAt, IconBox, IconBranch, IconCheck, IconChevron, IconCopy, IconDots, IconEyeCheck, IconFolder, IconImage, IconPaperclip, IconSquare } from "./icons";
 import { withoutHandoff } from "../team";
+import { TemporaryChatButton, TemporaryChatNote } from "./TemporaryChat";
 
 import { suggestionMessages, suggestionKey, useReplySuggestion } from "../replySuggestion";
 
@@ -700,7 +701,12 @@ export function SessionPanel({ sessionId }: { sessionId: string }) {
   const focusToken = useStore((s) => s.focusComposerToken);
   const inspection = useStore((s) => (session ? s.inspections[session.workspaceId] : undefined));
   const storeTab = useStore((s) => s.sessionTab);
-  const tab: SessionTab = storeTab;
+  // A quick chat is only its conversation: no tabs, no other views.
+  const quick = useStore((s) => {
+    const workspaceId = s.sessions[sessionId]?.workspaceId;
+    return !!workspaceId && s.quickChats.some((chat) => chat.workspaceId === workspaceId);
+  });
+  const tab: SessionTab = quick ? "transcript" : storeTab;
   const setTab = useStore((s) => s.setSessionTab);
   // A document the agent loaded into Big Thing waits there until the tab is opened.
   const docWaiting = useStore((s) => Boolean(s.bigThingDoc[sessionId])) && tab !== "odyssey";
@@ -1107,7 +1113,7 @@ export function SessionPanel({ sessionId }: { sessionId: string }) {
   ];
 
   return (
-    <section className={`panel session-panel ${dropping ? "drop-target" : ""}`}>
+    <section className={`panel session-panel ${dropping ? "drop-target" : ""} ${quick ? "session-quick" : ""}`}>
       <>
       <header className="session-header">
         <h2
@@ -1150,7 +1156,7 @@ export function SessionPanel({ sessionId }: { sessionId: string }) {
         )}
       </header>
 
-      <div className="tabs">
+      {!quick && <div className="tabs">
         {/* Only the real tabs are in the tablist; the trailing controls are a
             toggle and a menu, and claiming otherwise would mislead a reader
             using a screen reader. */}
@@ -1184,7 +1190,7 @@ export function SessionPanel({ sessionId }: { sessionId: string }) {
             tab={tab}
           />
         )}
-      </div>
+      </div>}
       </>
       {active && <div aria-hidden="true" className="progress-line" />}
       {tab === "transcript" && (
@@ -1302,6 +1308,7 @@ export function SessionPanel({ sessionId }: { sessionId: string }) {
             stays visible however far the transcript has scrolled. */}
         <ActivityBar onOpenAgents={() => setTab("agents")} sessionId={sessionId} />
         {projection.plan && <PlanBar active={active} key={projection.plan.content.id} plan={projection.plan.content} />}
+        {quick && <TemporaryChatNote local={session.snapshot.provider === "local"} workspaceId={session.workspaceId} />}
         {/* The Big Thing view has no use for a prompt box: the run submits its
             own turns. The activity strip above stays, because background work
             outliving a turn is exactly what it is for. */}
@@ -1422,10 +1429,11 @@ export function SessionPanel({ sessionId }: { sessionId: string }) {
           <ContextRing sessionId={sessionId} />
           <ConfigPickers configOptions={configOptions} disabled={projection.process === "exited" || busy !== null} sessionId={sessionId} />
           {!configOptions && <span className="chip small">{t("the account's default model")}</span>}
-          {!localChat && <TeamChip disabled={projection.process === "exited"} sessionId={sessionId} />}
+          {!localChat && !quick && <TeamChip disabled={projection.process === "exited"} sessionId={sessionId} />}
           <PendingLocalResources sessionId={sessionId} />
           {session.snapshot.provider === "local" && <LocalBadge configOptions={configOptions} localChat={localChat} sessionId={sessionId} />}
           <span className="composer-spacer" />
+          {quick && <TemporaryChatButton workspaceId={session.workspaceId} />}
           {active && (
             <button aria-label={t("Cancel turn")} className="icon-button" onClick={() => void cancel(sessionId)} title={t("Cancel the current turn")} type="button">
               <IconSquare />

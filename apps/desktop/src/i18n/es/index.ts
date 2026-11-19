@@ -13,5 +13,6 @@ import { settings } from "./settings";
 import { shell } from "./shell";
 import { ultrareview } from "./ultrareview";
 import { setup } from "./setup";
+import { quick } from "./quick";
 
-export const es: Record<string, string> = { ...logic, ...session, ...settings, ...shell, ...bigthing, ...ultrareview, ...local, ...accounts, ...memberResources, ...setup, ...voice };
+export const es: Record<string, string> = { ...logic, ...session, ...settings, ...shell, ...bigthing, ...ultrareview, ...local, ...accounts, ...memberResources, ...setup, ...quick, ...voice };

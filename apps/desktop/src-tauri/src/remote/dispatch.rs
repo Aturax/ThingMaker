@@ -16,7 +16,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 use thingmaker_supervisor::DesktopError;
 
-use crate::commands::{app as app_commands, artifacts, attachments, bigthing, delegation, git, odyssey, providers, review, session, workspace};
+use crate::commands::{app as app_commands, artifacts, attachments, bigthing, delegation, git, odyssey, providers, quick, review, session, workspace};
 use crate::state::AppState;
 
 /// The commands a phone may call. `session_subscribe` is the connection's
@@ -24,6 +24,9 @@ use crate::state::AppState;
 pub const ALLOWED: &[&str] = &[
     "execution_profiles",
     "workspace_list",
+    // Read-only: the phone lists quick chats apart; making, changing and
+    // deleting them stays on the computer.
+    "quick_chat_list",
     "workspace_inspect",
     "worktree_list",
     "session_list_open",
@@ -194,6 +197,7 @@ pub async fn dispatch(app: &AppHandle, command: &str, args: Value) -> Result<Val
     match command {
         "execution_profiles" => Reply::reply(workspace::execution_profiles()),
         "workspace_list" => sync_call!(app, args, workspace::workspace_list),
+        "quick_chat_list" => sync_call!(app, args, quick::quick_chat_list),
         "workspace_inspect" => match known_workspace(app, &args) {
             Ok(()) => sync_call!(app, args, workspace::workspace_inspect, "path"),
             Err(error) => refused(error),
