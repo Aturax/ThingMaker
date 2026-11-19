@@ -34,6 +34,19 @@ jobs:
       - run: pnpm --filter @thingmaker/desktop test
       - run: pnpm --filter @thingmaker/desktop build:vite
 
+      # Tauri refuses to compile when a bundled resource is missing. The
+      # runtimes are built by the release's prepare scripts; these tests
+      # never use them, so empty placeholders are enough.
+      - name: Stand in for the bundled Windows runtimes
+        shell: pwsh
+        run: |
+          $config = Get-Content apps/desktop/src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
+          foreach ($source in $config.bundle.resources.PSObject.Properties.Name) {
+            $path = Join-Path apps/desktop/src-tauri $source
+            if ($source.EndsWith('/')) { New-Item -ItemType Directory -Force -Path $path | Out-Null }
+            elseif (-not (Test-Path $path)) { New-Item -ItemType File -Force -Path $path | Out-Null }
+          }
+
       - name: Use ordinary Windows link permissions
         shell: pwsh
         run: |
