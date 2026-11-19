@@ -181,8 +181,18 @@ pub struct TerminalWriteRequest {
 
 #[tauri::command]
 pub fn terminal_write(request: TerminalWriteRequest, state: State<'_, AppState>) -> CommandResult<()> {
-    let terminal = state.terminals.get(&request.id).ok_or_else(|| DesktopError::not_ready("terminal not found"))?;
-    terminal.write(request.text.as_bytes())
+    write_terminal(&state, &request.id, request.text.as_bytes())
+}
+
+fn write_terminal(state: &AppState, id: &str, bytes: &[u8]) -> CommandResult<()> {
+    let terminal = state.terminals.get(id).ok_or_else(|| DesktopError::not_ready("terminal not found"))?;
+    let folder = state.auth_terminal_profiles.lock().unwrap_or_else(|p| p.into_inner()).get(id).cloned();
+    if let Some(folder) = folder {
+        // A person may leave the browser or setup wizard open for a long time.
+        // Refresh file-only auth BEFORE forwarding any code or confirmation.
+        thingmaker_supervisor::agents::gemini::launch::prepare_file_auth(&folder).map_err(DesktopError::io)?;
+    }
+    terminal.write(bytes)
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,6 +211,7 @@ pub fn terminal_resize(request: TerminalResizeRequest, state: State<'_, AppState
 
 #[tauri::command]
 pub fn terminal_close(id: String, state: State<'_, AppState>) -> CommandResult<()> {
+    state.auth_terminal_profiles.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
     state.terminal_workspaces.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
     state.terminals.close(&id)
 }
@@ -209,8 +220,7 @@ pub fn terminal_close(id: String, state: State<'_, AppState>) -> CommandResult<(
 /// before the user saves it.
 #[tauri::command]
 pub fn terminal_export(id: String, state: State<'_, AppState>) -> CommandResult<String> {
-    let terminal = state.terminals.get(&id).ok_or_else(|| DesktopError::not_ready("terminal not found"))?;
-    Ok(String::from_utf8_lossy(&terminal.scrollback()).into_owned())
+    state.terminals.export(&id)
 }
 
 #[derive(Debug, Deserialize)]
@@ -235,4 +245,29 @@ pub async fn save_text_file(request: SaveTextRequest, app: AppHandle) -> Command
     let path = path.into_path().map_err(|e| DesktopError::io(e.to_string()))?;
     std::fs::write(&path, request.content.as_bytes()).map_err(|e| DesktopError::io(e.to_string()))?;
     Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+
+    #[test]
+    fn authentication_input_refreshes_an_expired_private_backend_before_forwarding() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::initialize(directory.path(), None).unwrap();
+        let folder = directory.path().join("profile");
+        thingmaker_supervisor::agents::gemini::launch::prepare_file_auth(&folder).unwrap();
+        let marker = folder.join(".gemini/antigravity-cli/cache/antigravity-keyring-unavailable");
+        std::fs::OpenOptions::new().write(true).open(&marker).unwrap().set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH)).unwrap();
+        let terminal = state.terminals.open_private(TerminalSpawn {
+            cwd: directory.path().into(), program: if cfg!(windows) { "cmd.exe".into() } else { "/bin/cat".into() },
+            args: if cfg!(windows) { vec!["/D".into(), "/Q".into()] } else { vec![] },
+            env: EnvironmentProfile::trusted_local().resolve(std::env::vars()).into_iter().collect(), cols: 80, rows: 24,
+        }).unwrap();
+        state.auth_terminal_profiles.lock().unwrap().insert(terminal.id.clone(), folder);
+        let outcome = write_terminal(&state, &terminal.id, b"test-input\n");
+        state.terminals.close_all();
+        outcome.unwrap();
+        assert!(marker.metadata().unwrap().modified().unwrap() > std::time::SystemTime::now() - std::time::Duration::from_secs(5));
+    }
 }

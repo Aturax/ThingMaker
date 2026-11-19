@@ -20,6 +20,8 @@ pub struct ProviderAuthStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logged_in: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
@@ -35,6 +37,7 @@ impl ProviderAuthStatus {
         Self {
             provider,
             logged_in: None,
+            setup_required: None,
             method: None,
             account: None,
             plan: None,
@@ -89,4 +92,17 @@ pub fn run_bounded(mut command: Command, timeout: Duration) -> Result<std::proce
         }
     }
     child.wait_with_output().map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_state_is_optional_for_old_clients_and_serializes_in_camel_case() {
+        let mut status: ProviderAuthStatus = serde_json::from_value(serde_json::json!({"provider":"gemini", "loggedIn":true})).unwrap();
+        assert_eq!(status.setup_required, None);
+        status.setup_required = Some(true);
+        assert_eq!(serde_json::to_value(status).unwrap()["setupRequired"], true);
+    }
 }

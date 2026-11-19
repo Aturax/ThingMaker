@@ -44,4 +44,6 @@ tempfile = { workspace = true }
 libc = "=0.2.189"
 
 [target.'cfg(windows)'.dependencies]
+junction = { version = "=2.1.0", default-features = false }
+same-file = "=1.0.6"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization"] }

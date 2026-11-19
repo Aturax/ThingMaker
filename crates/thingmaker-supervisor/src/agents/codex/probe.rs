@@ -148,6 +148,7 @@ pub fn status_from_account(value: &Value) -> ProviderAuthStatus {
     let account = value.get("account").filter(|account| !account.is_null());
     ProviderAuthStatus {
         provider: Provider::Codex,
+        setup_required: None,
         logged_in: Some(account.is_some()),
         method: account.and_then(|account| account.get("type")).and_then(Value::as_str).map(str::to_string),
         account: account.and_then(|account| account.get("email")).and_then(Value::as_str).map(str::to_string),

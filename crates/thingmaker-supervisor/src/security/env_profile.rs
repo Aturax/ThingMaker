@@ -135,7 +135,10 @@ impl EnvironmentProfile {
     }
 
     pub fn with_set(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.set.insert(name.into(), value.into());
+        let name = name.into();
+        #[cfg(windows)]
+        self.set.retain(|existing, _| !existing.eq_ignore_ascii_case(&name));
+        self.set.insert(name, value.into());
         self
     }
 
@@ -176,6 +179,8 @@ impl EnvironmentProfile {
             }
         }
         for (name, value) in &self.set {
+            #[cfg(windows)]
+            env.retain(|inherited, _| !inherited.eq_ignore_ascii_case(name));
             env.insert(name.clone(), value.clone());
         }
         env
@@ -202,6 +207,17 @@ mod tests {
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explicit_account_paths_replace_mixed_case_windows_environment_names() {
+        let env = EnvironmentProfile::trusted_local().with_set("home", "runtime-main").with_set("HOME", "private").with_set("APPDATA", "private-appdata")
+            .resolve([("home".into(), "main".into()), ("AppData".into(), "main-appdata".into())]);
+        assert_eq!(env.get("HOME").map(String::as_str), Some("private"));
+        assert_eq!(env.get("APPDATA").map(String::as_str), Some("private-appdata"));
+        assert!(!env.contains_key("home"));
+        assert!(!env.contains_key("AppData"));
     }
 
     #[test]

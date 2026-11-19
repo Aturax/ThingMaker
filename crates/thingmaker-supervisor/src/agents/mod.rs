@@ -245,7 +245,7 @@ impl AgentLaunch {
                 },
                 None => options.config_dir.iter().map(|dir| ("CLAUDE_CONFIG_DIR".to_string(), dir.to_string_lossy().into_owned())).collect(),
             },
-            Self::Gemini(_) => vec![(gemini::launch::DISABLE_AUTO_UPDATE.to_string(), "1".to_string())],
+            Self::Gemini(options) => gemini::launch::account_environment(options.account_home.as_deref()),
             Self::Codex(options) => {
                 let mut env = Vec::new();
                 if let Some(home) = &options.codex_home {

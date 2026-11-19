@@ -29,12 +29,12 @@ function decodeBase64(data: string): Uint8Array {
 type PendingPaste = { text: string; lines: number };
 type ExportPreview = { text: string; redactions: Redaction[] };
 
-export function TerminalPane({ workspaceId }: { workspaceId: string }) {
+export function TerminalPane({ workspaceId, initialInfo, onClose }: { workspaceId: string; initialInfo?: TerminalInfo; onClose?: () => void }) {
   const setError = useStore((s) => s.setError);
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const [info, setInfo] = useState<TerminalInfo | null>(null);
+  const [info, setInfo] = useState<TerminalInfo | null>(initialInfo ?? null);
   const [note, setNote] = useState<string | null>(null);
   const [pendingPaste, setPendingPaste] = useState<PendingPaste | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
@@ -44,6 +44,11 @@ export function TerminalPane({ workspaceId }: { workspaceId: string }) {
   // Discover an existing terminal for this workspace (survives tab switches
   // and renderer reloads; the supervisor replays scrollback on subscribe).
   useEffect(() => {
+    if (initialInfo) {
+      setInfo(initialInfo);
+      setConnecting(false);
+      return;
+    }
     let cancelled = false;
     setConnecting(true);
     api
@@ -60,7 +65,7 @@ export function TerminalPane({ workspaceId }: { workspaceId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, setError]);
+  }, [workspaceId, initialInfo, setError]);
 
   // Mount xterm and stream once a terminal exists.
   useEffect(() => {
@@ -171,6 +176,7 @@ export function TerminalPane({ workspaceId }: { workspaceId: string }) {
   }, [info, setError]);
 
   const requestClose = () => {
+    if (onClose) { onClose(); return; }
     if (info && !info.exited) setConfirmClose(true);
     else void close();
   };
@@ -206,9 +212,9 @@ export function TerminalPane({ workspaceId }: { workspaceId: string }) {
             <span className="chip mono small" title={info.cwd}>
               {info.program} · {info.exited ? (info.exitCode === null ? t("exited") : t("exited ({code})", { code: info.exitCode })) : `pid ${info.pid ?? "?"}`}
             </span>
-            <button className="button" onClick={() => void startExport()} type="button">
+            {!initialInfo && <button className="button" onClick={() => void startExport()} type="button">
               {t("Export log…")}
-            </button>
+            </button>}
             <button className="button button-warn" onClick={requestClose} type="button">
               {info.exited ? t("Dismiss") : t("Close terminal")}
             </button>
@@ -218,7 +224,7 @@ export function TerminalPane({ workspaceId }: { workspaceId: string }) {
             {connecting ? t("Connecting…") : t("Open terminal")}
           </button>
         )}
-        <span className="chip small chip-warn">{t("Trusted local - host access")}</span>
+        {!initialInfo && <span className="chip small chip-warn">{t("Trusted local - host access")}</span>}
       </div>
       {note && <p className="small muted">{note}</p>}
       {!info && !connecting && (

@@ -134,7 +134,11 @@ fn transcript_exists(state: &AppState, provider: Provider, root: &Path, session_
             let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".codex"));
             thingmaker_supervisor::agents::codex::transcript_usage::find_rollout(&codex_home, session_id).is_some()
         }
-        Provider::Gemini => thingmaker_supervisor::agents::gemini::launch::conversation_path(&home, session_id).is_file(),
+        Provider::Gemini => {
+            use thingmaker_supervisor::agents::{accounts, gemini::launch::conversation_path};
+            conversation_path(&home, session_id).is_file() || state.accounts().iter().filter(|a| a.provider == Provider::Gemini)
+                .any(|a| conversation_path(&accounts::account_folder(&state.data_dir, a.provider, &a.id), session_id).is_file())
+        }
         Provider::Local => thingmaker_supervisor::agents::local::conversation_exists(&thingmaker_supervisor::agents::local::local_home(&state.data_dir), root, session_id),
     }
 }
@@ -188,7 +192,7 @@ pub(crate) fn build_launch(
             options.permission_mode = permission_for(record);
             options.resume = resume;
             // The active account; its folder shares everything but the sign-in.
-            options.config_dir = state.account_folder(Provider::Claude, None);
+            options.config_dir = state.try_account_folder(Provider::Claude, None)?;
             (LaunchTarget::executable(resolved.program), AgentLaunch::Claude(options))
         }
         Provider::Codex => {
@@ -198,11 +202,15 @@ pub(crate) fn build_launch(
             options.effort = effort;
             options.permission_mode = permission_for(record);
             options.resume = resume;
-            options.codex_home = state.account_folder(Provider::Codex, None);
+            options.codex_home = state.try_account_folder(Provider::Codex, None)?;
             (LaunchTarget::executable(resolved.program), AgentLaunch::Codex(options))
         }
         Provider::Gemini => {
             let mut options = GeminiLaunchOptions::new(root, resolved.program.clone());
+            options.account_home = state.try_account_folder(Provider::Gemini, None)?;
+            if let Some(folder) = options.account_home.as_deref() {
+                thingmaker_supervisor::agents::gemini::launch::require_isolated_token(folder).map_err(DesktopError::unsupported)?;
+            }
             options.reserved = reserved;
             options.model = model;
             options.effort = effort;
@@ -404,6 +412,15 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
     let resolved = super::member_resources::resolve_for(&state, Path::new(&record.canonical_root), provider, model.as_deref(), selection.as_ref())?;
     let opened_model = model.clone();
     let (target, mut launch) = build_launch(&state, &record, provider, model, effort, resume, session_id.clone())?;
+    // A newly initialized CLI may already have a private history when the main
+    // account creates its own. Resume with the chosen account only if it can read this conversation.
+    if let AgentLaunch::Gemini(options) = &launch
+        && let OpenRequestMode::Resume { session_id } | OpenRequestMode::Fork { session_id } = &request.mode
+        && let Some(home) = options.account_home.as_ref().or(state.home.as_ref())
+        && !thingmaker_supervisor::agents::gemini::launch::conversation_path(home, session_id).is_file()
+    {
+        return Err(DesktopError::not_ready("This Gemini conversation is stored under another account. Select the account that started it and reopen it."));
+    }
     let generation = 1;
     let program = program_of(&target, &launch);
     let mut config = SessionActorConfig::new(target, launch.clone());
@@ -1254,6 +1271,33 @@ mod recovery_tests {
         let current = Some("@agent/default".into());
         assert_eq!(LocalSessionSetup::restore(saved,current.clone(),None), (Some(setup.model),Some(selection)));
         assert_eq!(LocalSessionSetup::restore(None,current.clone(),None), (current,None));
+    }
+
+    #[test]
+    fn recovery_finds_the_first_gemini_conversation_in_its_private_profile() {
+        use thingmaker_supervisor::agents::{accounts, gemini::launch::conversation_path};
+        let temp = tempfile::tempdir().unwrap();
+        let mut state = AppState::initialize(&temp.path().join("data"), None).unwrap();
+        let home = temp.path().join("home");
+        state.home = Some(home.clone());
+        let account = accounts::Account { id: "work".into(), provider: Provider::Gemini, label: "Work".into() };
+        state.with_storage(|s| s.setting_set(accounts::ACCOUNTS_SETTING, thingmaker_supervisor::storage::settings::GLOBAL_SCOPE, &[account])).unwrap();
+        state.with_storage(|s| s.setting_set(accounts::ACTIVE_ACCOUNT_SETTING, "gemini", &"work")).unwrap();
+        let profile = state.try_account_folder(Provider::Gemini, None).unwrap().unwrap();
+        let db = conversation_path(&profile, "first");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        std::fs::write(&db, "first").unwrap();
+        let workspace = state.with_storage(|s| s.workspace_upsert("/project", "/project", "project")).unwrap();
+        let row = state.with_storage(|s| s.session_upsert(&workspace.id, "first", SessionOrigin::Desktop, Provider::Gemini)).unwrap();
+        state.with_storage(|s| s.session_set_archive(&row.id, ArchiveState::Unavailable)).unwrap();
+        assert_eq!(load_session_records(&state, &workspace.id).unwrap()[0].archive_state, ArchiveState::Active);
+        assert!(!conversation_path(&home, "first").exists());
+        assert!(transcript_exists(&state, Provider::Gemini, Path::new("/project"), "first"));
+        // An independent history in the main account must not hide or overwrite the private one.
+        let main = conversation_path(&home, "other");
+        std::fs::create_dir_all(main.parent().unwrap()).unwrap();
+        std::fs::write(main, "other").unwrap();
+        assert!(conversation_path(&state.try_account_folder(Provider::Gemini, None).unwrap().unwrap(), "first").is_file());
     }
 
     #[test]

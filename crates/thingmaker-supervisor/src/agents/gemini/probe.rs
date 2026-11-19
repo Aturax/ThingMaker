@@ -67,8 +67,86 @@ pub const SIGN_IN_HINT: &str = "Sign in through the Antigravity app, or run `agy
 
 /// `agy models`, with a bound, in the documented environment.
 pub fn read_models(program: &Path, timeout: Duration) -> Result<Vec<ProviderModel>, String> {
-    let env = super::launch::environment().resolve(std::env::vars());
+    read_models_for_account(program, None, timeout)
+}
+
+pub fn read_models_for_account(program: &Path, folder: Option<&Path>, timeout: Duration) -> Result<Vec<ProviderModel>, String> {
+    if let Some(folder) = folder {
+        super::launch::require_isolated_token(folder)?;
+        verify_file_auth(program, timeout)?;
+        super::launch::prepare_file_auth(folder)?;
+    }
+    let env = super::launch::environment_for_account(folder).resolve(std::env::vars());
     read_models_with(program, &env, timeout)
+}
+
+/// An empty private profile must be signed out, even if the app is signed in.
+/// Refuse an unrecognized response rather than opening an unsafe login.
+pub fn verify_file_auth(program: &Path, timeout: Duration) -> Result<(), String> {
+    use std::sync::{Mutex, OnceLock};
+    static VERIFIED: OnceLock<Mutex<BTreeMap<std::path::PathBuf, std::time::SystemTime>>> = OnceLock::new();
+    let binary = program.canonicalize().map_err(|e| e.to_string())?;
+    let modified = binary.metadata().and_then(|m| m.modified()).map_err(|e| e.to_string())?;
+    let mut verified = VERIFIED.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+    if verified.get(&binary) == Some(&modified) { return Ok(()); }
+    // The fallback-cache mechanism is internal. Unknown CLI versions must not
+    // silently choose a different credential backend, even when the main
+    // account happens to be signed out during the empty-profile probe.
+    let mut version = Command::new(program);
+    crate::platform::no_window(&mut version);
+    version.arg("--version").env_clear().envs(super::launch::environment().resolve(std::env::vars())).stdin(Stdio::null());
+    let output = crate::agents::auth::run_bounded(version, timeout)?;
+    if !output.status.success() || String::from_utf8_lossy(&output.stdout).trim() != "1.5.9" {
+        return Err("Additional Gemini accounts require the verified Antigravity CLI 1.5.9 file-storage backend. This CLI version has not been validated; the main account is unchanged.".into());
+    }
+    let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+    super::launch::prepare_file_auth(directory.path())?;
+    let env = super::launch::environment_for_account(Some(directory.path())).resolve(std::env::vars());
+    match read_models_with(program, &env, timeout) {
+        Err(error) if error.contains("Please sign in to view available models") => {
+            verified.insert(binary, modified);
+            Ok(())
+        },
+        _ => Err(super::launch::ISOLATION_ERROR.into()),
+    }
+}
+
+/// Use the CLI's native ACP logout; `/logout` is a local TUI command and
+/// cannot safely be sent as a print-mode model prompt.
+pub async fn logout_for_account(program: &Path, folder: &Path, timeout: Duration) -> Result<(), String> {
+    use crate::transport::{LaunchSpec, Transport};
+    use serde_json::json;
+
+    super::launch::require_isolated_token(folder)?;
+    let checked_program = program.to_path_buf();
+    tokio::task::spawn_blocking(move || verify_file_auth(&checked_program, timeout))
+        .await.map_err(|e| e.to_string())??;
+    super::launch::prepare_file_auth(folder)?;
+    let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let spec = LaunchSpec {
+        program: program.to_path_buf(), args: super::launch::acp_arguments(folder), cwd: directory.path().to_path_buf(),
+        env: super::launch::environment_for_account(Some(folder)).with_program_dir(program).resolve(std::env::vars()),
+    };
+    let (transport, mut events) = Transport::spawn(spec, 0).await.map_err(|e| e.to_string())?;
+    // Drain diagnostics without retaining or publishing authentication output.
+    let drain = tokio::spawn(async move { while events.recv().await.is_some() {} });
+    let outcome = async {
+        let initialized = transport.request("initialize", json!({"protocolVersion":1,"clientCapabilities":{}}), timeout).await.map_err(|e| e.to_string())?;
+        if initialized.pointer("/agentCapabilities/auth/logout").is_none() {
+            return Err("This Antigravity CLI does not support native sign-out; the account has been kept.".into());
+        }
+        // Resolve the saved login without an interactive authenticate request.
+        // An unrecognized/expired login fails here rather than opening a browser.
+        transport.request("session/new", json!({"cwd":directory.path(),"mcpServers":[]}), timeout).await.map_err(|e| e.to_string())?;
+        transport.request("logout", json!({}), timeout).await.map_err(|e| e.to_string())?;
+        if super::launch::token_path(folder).exists() {
+            return Err("Antigravity did not clear this account's sign-in; the account has been kept.".into());
+        }
+        Ok(())
+    }.await;
+    transport.shutdown(Duration::from_secs(2)).await;
+    drain.abort();
+    outcome
 }
 
 /// `agy models` with an environment already resolved (a session's own).
@@ -133,9 +211,23 @@ pub fn models_from_list(text: &str) -> Vec<ProviderModel> {
 
 /// Signed in when `agy models` answers; otherwise the reason.
 pub fn read_status(program: &Path, timeout: Duration) -> ProviderAuthStatus {
-    match read_models(program, timeout) {
-        Ok(_) => ProviderAuthStatus { provider: Provider::Gemini, logged_in: Some(true), method: Some("google".into()), account: None, plan: None, problem: None },
-        Err(error) => ProviderAuthStatus { provider: Provider::Gemini, logged_in: Some(false), method: None, account: None, plan: None, problem: Some(error) },
+    read_status_for_account(program, None, timeout)
+}
+
+pub fn read_status_for_account(program: &Path, folder: Option<&Path>, timeout: Duration) -> ProviderAuthStatus {
+    read_status_with_identity(program, folder, timeout, true)
+}
+
+pub fn read_status_with_identity(program: &Path, folder: Option<&Path>, timeout: Duration, identity: bool) -> ProviderAuthStatus {
+    match read_models_for_account(program, folder, timeout) {
+        Ok(_) if !identity => ProviderAuthStatus { provider: Provider::Gemini, logged_in: Some(true), setup_required: None, method: Some("google".into()), account: None, plan: None, problem: None },
+        Ok(_) => {
+            let identity = super::quota::read_identity_for_account(program, folder, timeout.min(Duration::from_secs(10)));
+            let setup = matches!(&identity, Err(problem) if problem == super::quota::SETUP_HINT);
+            let identity = identity.ok();
+            ProviderAuthStatus { provider: Provider::Gemini, logged_in: Some(true), setup_required: setup.then_some(true), method: Some("google".into()), account: identity.as_ref().and_then(|value| value.0.clone()), plan: identity.and_then(|value| value.1), problem: setup.then(|| super::quota::SETUP_HINT.to_string()) }
+        },
+        Err(error) => ProviderAuthStatus { provider: Provider::Gemini, logged_in: Some(false), setup_required: None, method: None, account: None, plan: None, problem: Some(error) },
     }
 }
 
@@ -144,12 +236,131 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires the official agy 1.5.9 binary; needs no Google account"]
+    fn installed_cli_file_backend_is_signed_out_without_ssh() {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from).unwrap();
+        let program = std::env::var_os(super::super::launch::PROGRAM_ENV).map(std::path::PathBuf::from)
+            .or_else(|| super::super::launch::find_program(&home)).expect("installed agy");
+        verify_file_auth(&program, Duration::from_secs(15)).expect("the verified CLI must select file storage without SSH");
+    }
+
+    #[test]
+    #[ignore = "requires a signed-in local agy installation; sends no model prompt"]
+    fn a_new_account_cannot_use_the_main_accounts_credentials() {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from).unwrap();
+        let program = super::super::launch::find_program(&home).expect("installed agy");
+        verify_file_auth(&program, Duration::from_secs(15)).expect("the installed CLI must isolate file-based auth");
+        let main = read_status(&program, Duration::from_secs(15));
+        assert_eq!(main.logged_in, Some(true), "the default account must be signed in for this check");
+        assert!(main.account.is_some(), "the signed-in email must be available from the status line");
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("account");
+        crate::agents::accounts::share(Provider::Gemini, &home.join(".gemini"), &folder, &home).unwrap();
+        let extra = read_status_for_account(&program, Some(&folder), Duration::from_secs(15));
+        assert_eq!(extra.logged_in, Some(false), "a new account must not reuse the main keyring or credential files");
+        assert!(extra.problem.unwrap_or_default().contains("isolated sign-in token"));
+        assert_eq!(read_status(&program, Duration::from_secs(15)).logged_in, Some(true), "the default account must remain signed in");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a signed-in local agy; uses only a dummy token in a temporary profile"]
+    async fn native_logout_keeps_an_unrecognized_private_token_instead_of_claiming_success() {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from).unwrap();
+        let program = super::super::launch::find_program(&home).expect("installed agy");
+        let checked_program = program.clone();
+        let before = tokio::task::spawn_blocking(move || read_status(&checked_program, Duration::from_secs(15))).await.unwrap();
+        assert_eq!(before.logged_in, Some(true));
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join(".gemini/antigravity-cli")).unwrap();
+        std::fs::write(super::super::launch::token_path(directory.path()), "{}").unwrap();
+        assert!(logout_for_account(&program, directory.path(), Duration::from_secs(15)).await.is_err());
+        assert!(super::super::launch::token_path(directory.path()).exists());
+        let after = tokio::task::spawn_blocking(move || read_status(&program, Duration::from_secs(15))).await.unwrap();
+        assert_eq!(after.logged_in, Some(true));
+        assert_eq!(after.account, before.account, "native logout of a private profile must not switch the main account");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_logout_requires_capability_and_confirmation_that_the_token_is_gone() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let profile = directory.path().join("profile");
+        std::fs::create_dir_all(profile.join(".gemini/antigravity-cli")).unwrap();
+        let token = super::super::launch::token_path(&profile);
+        std::fs::write(&token, "private-token").unwrap();
+        let program = directory.path().join("agy");
+        for (capability, remove, success) in [(false, false, false), (true, false, false), (true, true, true)] {
+            let capabilities = if capability { r#"{"auth":{"logout":{}}}"# } else { "{}" };
+            let clear = if remove { "rm -- \"$HOME/.gemini/antigravity-cli/antigravity-oauth-token\"" } else { ":" };
+            let script = format!(r#"#!/bin/sh
+if [ "$1" = --version ]; then echo 1.5.9; exit 0; fi
+if [ "$1" = models ]; then echo 'Please sign in to view available models' >&2; exit 1; fi
+while IFS= read -r line; do
+ case "$line" in
+  *'"method":"initialize"'*) echo '{{"jsonrpc":"2.0","id":1,"result":{{"agentCapabilities":{capabilities}}}}}' ;;
+  *'"method":"session/new"'*) echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"logout-probe"}}}}' ;;
+  *'"method":"logout"'*) {clear}; echo '{{"jsonrpc":"2.0","id":3,"result":{{}}}}' ;;
+ esac
+done
+"#);
+            std::fs::write(&program, script).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(logout_for_account(&program, &profile, Duration::from_secs(2)).await.is_ok(), success);
+            assert_eq!(token.exists(), !success);
+        }
+    }
+
+    #[test]
     fn the_catalog_reads_as_agy_prints_it() {
         let models = models_from_list("Fetching available models...\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\ngemini-3.1-pro-high\tGemini 3.1 Pro (High)\nclaude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\n");
         let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
         assert_eq!(ids, ["gemini-3.8-flash-low", "gemini-3.1-pro-high", "claude-opus-4-6-thinking"]);
         assert_eq!(models[1].name, "Gemini 3.1 Pro (High)");
         assert!(models_from_list("Fetching available models...\n").is_empty());
+    }
+
+    #[test]
+    fn an_unsigned_profile_never_probes_a_cli_that_might_use_the_shared_keychain() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = read_models_for_account(Path::new("/must-not-run"), Some(dir.path()), Duration::from_secs(1)).unwrap_err();
+        assert_eq!(error, super::super::launch::ISOLATION_ERROR);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_login_preflight_refuses_shared_auth_and_unknown_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("agy");
+        let write = |body: &str| {
+            std::fs::write(&program, format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 1.5.9; exit 0; fi\n{body}\n")).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        write("printf 'gemini-test\\tGemini Test\\n'");
+        assert!(verify_file_auth(&program, Duration::from_secs(2)).is_err());
+        write("echo 'network unavailable' >&2; exit 1");
+        assert!(verify_file_auth(&program, Duration::from_secs(2)).is_err());
+        let count = dir.path().join("checks");
+        write(&format!("echo probe >> '{}'\necho 'Please sign in to view available models' >&2; exit 1", count.display()));
+        assert!(verify_file_auth(&program, Duration::from_secs(2)).is_ok());
+        assert!(verify_file_auth(&program, Duration::from_secs(2)).is_ok());
+        assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 1);
+        let modified = program.metadata().unwrap().modified().unwrap();
+        std::fs::File::open(&program).unwrap().set_modified(modified + Duration::from_secs(2)).unwrap();
+        assert!(verify_file_auth(&program, Duration::from_secs(2)).is_ok());
+        assert_eq!(std::fs::read_to_string(count).unwrap().lines().count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unknown_cli_versions_are_refused_even_when_they_report_signed_out() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("agy");
+        std::fs::write(&program, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 1.5.10; exit 0; fi\necho 'Please sign in to view available models' >&2; exit 1\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(verify_file_auth(&program, Duration::from_secs(2)).unwrap_err().contains("has not been validated"));
     }
 
     #[test]

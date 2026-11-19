@@ -183,12 +183,12 @@ export const ORCHESTRATOR_PROVIDERS: readonly Provider[] = ["claude", "codex", "
  * reaches only this computer. A bare name is a chat.
  */
 /**
- * One of a provider's accounts (Claude Code, Codex). The default is the
+ * One of a provider's accounts (Claude Code, Codex, Gemini). The default is the
  * person's own folder; an added one has a folder of its own that shares
  * everything but the sign-in. The active one is used by new sessions.
  */
-export type AccountView = { id: string; provider: Provider; label: string; isDefault: boolean; active: boolean; auth?: ProviderAuthStatus };
-export const ACCOUNT_PROVIDERS: readonly Provider[] = ["claude", "codex"] as const;
+export type AccountView = { id: string; provider: Provider; label: string; isDefault: boolean; active: boolean; conflicts?: string[]; auth?: ProviderAuthStatus };
+export const ACCOUNT_PROVIDERS: readonly Provider[] = ["claude", "codex", "gemini"] as const;
 
 export type LocalKind = "chat" | "agent";
 
@@ -626,6 +626,7 @@ export const JOB_EVENT = "thingmaker://job";
 export type ProviderAuthStatus = {
   provider: Provider;
   loggedIn?: boolean;
+  setupRequired?: boolean;
   method?: string;
   account?: string;
   plan?: string;
@@ -1918,6 +1919,7 @@ export const COMMANDS = {
   providersStatus: "providers_status",
   providerSetLocation: "provider_set_location",
   providerLoginStart: "provider_login_start",
+  providerLoginTerminal: "provider_login_terminal",
   providerLoginCancel: "provider_login_cancel",
   providerModels: "provider_models",
   providerQuota: "provider_quota",

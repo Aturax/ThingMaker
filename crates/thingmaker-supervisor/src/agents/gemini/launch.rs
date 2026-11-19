@@ -41,6 +41,109 @@ pub fn environment() -> crate::security::EnvironmentProfile {
     crate::security::EnvironmentProfile::trusted_local().with_set(DISABLE_AUTO_UPDATE, "1")
 }
 
+/// The account's own home. `prepare_file_auth` selects private file storage;
+/// neither the agent nor its tools receive a synthetic SSH environment.
+/// The default account keeps its ordinary local/keyring authentication.
+pub fn account_environment(folder: Option<&Path>) -> Vec<(String, String)> {
+    let mut env = vec![(DISABLE_AUTO_UPDATE.into(), "1".into())];
+    if let Some(folder) = folder {
+        let path = folder.to_string_lossy().into_owned();
+        if let Some(home) = std::env::home_dir() {
+            let mut git = home.join(".gitconfig");
+            if !git.is_file() {
+                let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config")).join("git/config");
+                if config.is_file() { git = config; }
+            }
+            for (key, default) in [("RUSTUP_HOME", home.join(".rustup")), ("CARGO_HOME", home.join(".cargo")), ("GIT_CONFIG_GLOBAL", git)] {
+                let path = std::env::var_os(key).map(PathBuf::from).unwrap_or(default);
+                env.push((key.into(), path.to_string_lossy().into_owned()));
+            }
+        }
+        env.extend([
+            ("HOME".into(), path.clone()), ("USERPROFILE".into(), path),
+            ("APPDATA".into(), folder.join("AppData/Roaming").to_string_lossy().into_owned()),
+            ("LOCALAPPDATA".into(), folder.join("AppData/Local").to_string_lossy().into_owned()),
+        ]);
+    }
+    env
+}
+
+pub const ISOLATION_ERROR: &str = "Antigravity did not save an isolated sign-in token. This account is not separate from the Antigravity app; do not use it. Sign in again with a supported CLI version.";
+
+pub fn token_path(folder: &Path) -> PathBuf {
+    folder.join(".gemini/antigravity-cli/antigravity-oauth-token")
+}
+
+pub fn legacy_token_path(folder: &Path) -> PathBuf {
+    folder.join(".gemini/jetski-standalone-oauth-token")
+}
+
+const LEGACY_AUTH_ERROR: &str = "This prototype Gemini profile contains legacy standalone credentials. Sign it out with the CLI before removing it, or add a new account profile. Legacy and current sign-ins must not be mixed.";
+
+/// agy 1.5.9 chooses its file-only backend for the process lifetime when this
+/// private cache entry is fresh at startup. This is an internal CLI contract:
+/// callers must verify the supported version and empty-profile behavior before
+/// using it. Refresh immediately before EVERY process launch, including resume.
+pub fn prepare_file_auth(folder: &Path) -> Result<(), String> {
+    if legacy_token_path(folder).exists() { return Err(LEGACY_AUTH_ERROR.into()); }
+    let gemini = folder.join(".gemini");
+    let cli = gemini.join("antigravity-cli");
+    let cache = gemini.join("cache");
+    let cli_cache = cli.join("cache");
+    for path in [folder, &gemini, &cache, &cli, &cli_cache] {
+        if let Ok(metadata) = path.symlink_metadata() {
+            if !metadata.is_dir() { return Err(ISOLATION_ERROR.into()); }
+            #[cfg(windows)]
+            if super::super::accounts::is_junction(path).map_err(|e| e.to_string())? { return Err(ISOLATION_ERROR.into()); }
+        } else { std::fs::create_dir_all(path).map_err(|e| e.to_string())?; }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        }
+    }
+    for directory in [cache, cli_cache] {
+        let marker = directory.join("antigravity-keyring-unavailable");
+        if marker.symlink_metadata().is_ok_and(|metadata| !metadata.is_file()) { return Err(ISOLATION_ERROR.into()); }
+        let file = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(marker).map_err(|e| e.to_string())?;
+        file.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now())).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// ACP's terminal login is authentication only: it prints a browser URL and
+/// accepts the returned code, then exits without starting an agent session.
+pub fn login_arguments(folder: Option<&Path>) -> Vec<String> {
+    if let Some(folder) = folder {
+        if token_path(folder).is_file() { return vec!["--mode".into(), "plan".into()]; }
+        let mut args = acp_arguments(folder);
+        args.push("--login".into());
+        args
+    } else { Vec::new() }
+}
+
+pub fn acp_arguments(folder: &Path) -> Vec<String> {
+    vec!["acp".into(), "--gemini-dir".into(), folder.join(".gemini").to_string_lossy().into_owned(),
+        "--app-data-dir".into(), "antigravity-cli".into()]
+}
+
+/// Fail closed even when `agy models` can answer through a shared keychain.
+pub fn require_isolated_token(folder: &Path) -> Result<(), String> {
+    if legacy_token_path(folder).exists() { return Err(LEGACY_AUTH_ERROR.into()); }
+    let root = folder.symlink_metadata().map_err(|_| ISOLATION_ERROR.to_string())?;
+    let directory = folder.join(".gemini").symlink_metadata().map_err(|_| ISOLATION_ERROR.to_string())?;
+    let cli = folder.join(".gemini/antigravity-cli").symlink_metadata().map_err(|_| ISOLATION_ERROR.to_string())?;
+    let token = token_path(folder).symlink_metadata().map_err(|_| ISOLATION_ERROR.to_string())?;
+    if !root.is_dir() || !directory.is_dir() || !cli.is_dir() || !token.is_file() || token.len() == 0 {
+        return Err(ISOLATION_ERROR.into());
+    }
+    Ok(())
+}
+
+pub fn environment_for_account(folder: Option<&Path>) -> crate::security::EnvironmentProfile {
+    account_environment(folder).into_iter().fold(environment(), |profile, (name, value)| profile.with_set(name, value))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeminiLaunchOptions {
     /// Canonical workspace root; the process's working directory.
@@ -57,6 +160,7 @@ pub struct GeminiLaunchOptions {
     /// The conversation to resume.
     pub resume: Option<String>,
     pub permission_mode: PermissionStance,
+    pub account_home: Option<PathBuf>,
 }
 
 impl GeminiLaunchOptions {
@@ -69,6 +173,7 @@ impl GeminiLaunchOptions {
             effort: None,
             resume: None,
             permission_mode: PermissionStance::ReadOnly,
+            account_home: None,
         }
     }
 
@@ -128,6 +233,95 @@ pub fn find_program(home: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_auth_refreshes_private_cache_without_changing_credentials_or_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        prepare_file_auth(dir.path()).unwrap();
+        let marker = dir.path().join(".gemini/antigravity-cli/cache/antigravity-keyring-unavailable");
+        let token = token_path(dir.path());
+        std::fs::write(&token, "account-owned-token").unwrap();
+        std::fs::OpenOptions::new().write(true).open(&marker).unwrap().set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH)).unwrap();
+        prepare_file_auth(dir.path()).unwrap();
+        assert!(marker.metadata().unwrap().modified().unwrap() > std::time::SystemTime::now() - std::time::Duration::from_secs(5));
+        assert_eq!(std::fs::read_to_string(token).unwrap(), "account-owned-token");
+        let env = environment_for_account(Some(dir.path())).resolve([
+            ("SSH_CONNECTION".into(), "ambient SSH connection".into()), ("SSH_CLIENT".into(), "ambient client".into()), ("SSH_TTY".into(), "/dev/tty".into()),
+        ]);
+        assert!(env.keys().all(|name| !name.starts_with("SSH_")));
+        assert_eq!(login_arguments(Some(dir.path())), ["--mode", "plan"]);
+        std::fs::remove_file(token_path(dir.path())).unwrap();
+        let login = login_arguments(Some(dir.path()));
+        assert_eq!(login.first().map(String::as_str), Some("acp"));
+        assert_eq!(login.last().map(String::as_str), Some("--login"));
+        assert_eq!(PathBuf::from(&login[2]), dir.path().join(".gemini"));
+        assert_eq!(login[4], "antigravity-cli", "the language server requires this subdirectory to be relative");
+        assert!(login_arguments(None).is_empty());
+    }
+
+    #[test]
+    fn file_auth_refuses_a_shared_cache_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared-cache");
+        let profile = dir.path().join("profile");
+        std::fs::create_dir_all(profile.join(".gemini")).unwrap();
+        std::fs::create_dir(&shared).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&shared, profile.join(".gemini/cache")).unwrap();
+        #[cfg(windows)]
+        junction::create(&shared, profile.join(".gemini/cache")).unwrap();
+        assert!(prepare_file_auth(&profile).is_err());
+        assert_eq!(std::fs::read_dir(shared).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn an_isolated_login_requires_a_real_nonempty_token_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(require_isolated_token(dir.path()).is_err());
+        std::fs::create_dir(dir.path().join(".gemini")).unwrap();
+        let token = token_path(dir.path());
+        std::fs::create_dir_all(token.parent().unwrap()).unwrap();
+        std::fs::write(&token, "").unwrap();
+        assert!(require_isolated_token(dir.path()).is_err());
+        std::fs::write(&token, "provider-owned-token").unwrap();
+        assert!(require_isolated_token(dir.path()).is_ok());
+        std::fs::write(legacy_token_path(dir.path()), "legacy-account").unwrap();
+        assert!(require_isolated_token(dir.path()).is_err());
+        assert!(prepare_file_auth(dir.path()).is_err());
+        std::fs::remove_file(legacy_token_path(dir.path())).unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&token).unwrap();
+            let other = dir.path().join("shared-token");
+            std::fs::write(&other, "main-account").unwrap();
+            std::os::unix::fs::symlink(&other, &token).unwrap();
+            assert!(require_isolated_token(dir.path()).is_err());
+        }
+    }
+
+    #[test]
+    fn extra_accounts_use_their_own_home_and_bypass_the_shared_keyring() {
+        let default = environment_for_account(None).resolve([(String::from("HOME"), String::from("/main"))]);
+        assert_eq!(default.get("HOME").map(String::as_str), Some("/main"));
+        assert!(!default.contains_key("SSH_CONNECTION"));
+        let extra = environment_for_account(Some(Path::new("/accounts/work")))
+            .resolve([(String::from("HOME"), String::from("/main")), (String::from("AGY_ADC_AUTH"), String::from("true"))]);
+        assert_eq!(extra["HOME"], "/accounts/work");
+        assert_eq!(extra["USERPROFILE"], "/accounts/work");
+        assert_eq!(PathBuf::from(&extra["APPDATA"]), Path::new("/accounts/work").join("AppData/Roaming"));
+        assert_eq!(PathBuf::from(&extra["LOCALAPPDATA"]), Path::new("/accounts/work").join("AppData/Local"));
+        for name in ["RUSTUP_HOME", "CARGO_HOME", "GIT_CONFIG_GLOBAL"] {
+            assert!(extra.contains_key(name));
+            assert!(!Path::new(&extra[name]).starts_with("/accounts/work"));
+        }
+        for name in ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] {
+            assert!(!extra.contains_key(name), "account isolation must not impersonate an SSH session");
+        }
+        assert!(!extra.contains_key("AGY_ADC_AUTH"), "ambient API/enterprise credentials must not replace the chosen account");
+        let mut options = GeminiLaunchOptions::new("/w", "/agy");
+        options.account_home = Some(PathBuf::from("/accounts/work"));
+        assert_eq!(crate::agents::AgentLaunch::Gemini(options).environment(), account_environment(Some(Path::new("/accounts/work"))));
+    }
 
     #[test]
     fn a_trusted_workspace_edits_and_runs_commands_and_an_inspected_one_plans() {

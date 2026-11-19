@@ -68,6 +68,8 @@ pub struct Terminal {
     events: broadcast::Sender<Arc<TerminalEvent>>,
     exited: AtomicBool,
     exit_code: Mutex<Option<u32>>,
+    private: bool,
+    private_input_started: AtomicBool,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -88,7 +90,17 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+// ConPTY asks xterm for its cursor position before it paints the sign-in URL.
+fn cursor_position_report(bytes: &[u8]) -> bool {
+    let Some(coords) = bytes.strip_prefix(b"\x1b[").and_then(|rest| rest.strip_suffix(b"R")) else { return false };
+    let mut fields = coords.split(|&byte| byte == b';');
+    let valid = |part: Option<&[u8]>| part.is_some_and(|p| !p.is_empty() && p.len() <= 5 && p.iter().all(u8::is_ascii_digit));
+    valid(fields.next()) && valid(fields.next()) && fields.next().is_none()
+}
+
 impl Terminal {
+    pub fn is_private(&self) -> bool { self.private }
+
     pub fn info(&self) -> TerminalInfo {
         let (cols, rows) = *lock(&self.size);
         TerminalInfo {
@@ -119,6 +131,10 @@ impl Terminal {
         if self.exited.load(Ordering::SeqCst) {
             return Err(DesktopError::not_ready("terminal process has exited"));
         }
+        if self.private && !cursor_position_report(bytes) {
+            // Keep the prompt for reconnects; stop recording before anything a user types can be echoed.
+            self.private_input_started.store(true, Ordering::SeqCst);
+        }
         let mut writer = lock(&self.writer);
         writer.write_all(bytes).and_then(|_| writer.flush()).map_err(|e| DesktopError::io(e.to_string()))
     }
@@ -137,6 +153,16 @@ impl Terminal {
     /// Terminates the shell and its process group (best effort, like an agent's own
     /// process-tree cleanup). Remote effects already caused are not undone.
     pub fn kill(&self) {
+        #[cfg(windows)]
+        if self.private {
+            // ConPTY can still be waiting for its initial cursor reply when
+            // the renderer disappears. Unblock that handshake before killing
+            // the process, otherwise ClosePseudoConsole can wait indefinitely.
+            self.private_input_started.store(true, Ordering::SeqCst);
+            let mut writer = lock(&self.writer);
+            let _ = writer.write_all(b"\x1b[1;1R");
+            let _ = writer.flush();
+        }
         #[cfg(unix)]
         if let Some(pid) = self.pid {
             unsafe {
@@ -163,6 +189,15 @@ impl TerminalManager {
     }
 
     pub fn open(&self, spawn: TerminalSpawn) -> Result<Arc<Terminal>, DesktopError> {
+        self.open_with_privacy(spawn, false)
+    }
+
+    /// Authentication output is never listed or exportable as a user terminal.
+    pub fn open_private(&self, spawn: TerminalSpawn) -> Result<Arc<Terminal>, DesktopError> {
+        self.open_with_privacy(spawn, true)
+    }
+
+    fn open_with_privacy(&self, spawn: TerminalSpawn, private: bool) -> Result<Arc<Terminal>, DesktopError> {
         if lock(&self.terminals).values().filter(|t| !t.is_exited()).count() >= MAX_TERMINALS {
             return Err(DesktopError::limit_exceeded(format!("at most {MAX_TERMINALS} terminals may be open")));
         }
@@ -201,6 +236,8 @@ impl TerminalManager {
             events,
             exited: AtomicBool::new(false),
             exit_code: Mutex::new(None),
+            private,
+            private_input_started: AtomicBool::new(false),
         });
         // Reader thread: PTY -> scrollback + subscribers.
         let reader_terminal = Arc::clone(&terminal);
@@ -215,7 +252,9 @@ impl TerminalManager {
                             let bytes = &buffer[..read];
                             {
                                 let mut scrollback = lock(&reader_terminal.scrollback);
-                                scrollback.extend(bytes.iter().copied());
+                                if !reader_terminal.private || !reader_terminal.private_input_started.load(Ordering::SeqCst) {
+                                    scrollback.extend(bytes.iter().copied());
+                                }
                                 while scrollback.len() > SCROLLBACK_BYTES {
                                     scrollback.pop_front();
                                 }
@@ -261,7 +300,18 @@ impl TerminalManager {
     }
 
     pub fn list(&self) -> Vec<TerminalInfo> {
-        lock(&self.terminals).values().map(|t| t.info()).collect()
+        lock(&self.terminals).values().filter(|t| !t.is_private()).map(|t| t.info()).collect()
+    }
+
+    pub fn export(&self, id: &str) -> Result<String, DesktopError> {
+        let terminal = self.get(id).ok_or_else(|| DesktopError::not_ready("terminal not found"))?;
+        if terminal.is_private() { return Err(DesktopError::unsupported("sign-in terminals cannot be exported")); }
+        Ok(String::from_utf8_lossy(&terminal.scrollback()).into_owned())
+    }
+
+    pub fn close_private(&self) {
+        let ids: Vec<_> = lock(&self.terminals).values().filter(|t| t.is_private()).map(|t| t.id.clone()).collect();
+        for id in ids { let _ = self.close(&id); }
     }
 
     /// Kills (if still running) and forgets the terminal. Output stays with
@@ -270,6 +320,11 @@ impl TerminalManager {
         let terminal = lock(&self.terminals).remove(id).ok_or_else(|| DesktopError::not_ready("terminal not found"))?;
         if !terminal.is_exited() {
             terminal.kill();
+        }
+        if terminal.private {
+            let mut scrollback = lock(&terminal.scrollback);
+            terminal.private_input_started.store(true, Ordering::SeqCst);
+            scrollback.clear();
         }
         Ok(())
     }
@@ -330,6 +385,39 @@ mod tests {
         assert_eq!(output, serde_json::json!({"type": "output", "dataBase64": "aGk="}));
         let exit = serde_json::to_value(TerminalEvent::Exit { code: Some(3) }).unwrap();
         assert_eq!(exit, serde_json::json!({"type": "exit", "code": 3}));
+    }
+
+    #[tokio::test]
+    async fn sign_in_terminals_cannot_be_listed_or_exported_and_reload_stops_them() {
+        let manager = TerminalManager::new();
+        let spec = if cfg!(windows) { spawn("cmd.exe", &["/D", "/Q", "/K", "echo Sign in at https://example.test/login"]) }
+            else { spawn("/bin/sh", &["-c", "echo 'Sign in at https://example.test/login'; exec cat"]) };
+        let terminal = manager.open_private(spec).unwrap();
+        assert!(manager.list().is_empty());
+        assert!(manager.export(&terminal.id).is_err());
+        terminal.write(b"\x1b[24;80R").unwrap();
+        assert!(!terminal.private_input_started.load(Ordering::SeqCst));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !String::from_utf8_lossy(&terminal.scrollback()).contains("https://example.test/login") {
+                if cfg!(windows) && terminal.scrollback().windows(4).any(|window| window == b"\x1b[6n") {
+                    terminal.write(b"\x1b[1;1R").unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await.expect("prompt output captured after xterm answers ConPTY");
+        for _ in 0..2 {
+            assert!(String::from_utf8_lossy(&terminal.scrollback()).contains("https://example.test/login"));
+        }
+        let mut events = terminal.subscribe();
+        terminal.write(if cfg!(windows) { b"echo one-time-code\r\n" } else { b"one-time-code\n" }).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), events.recv()).await.unwrap().unwrap();
+        assert!(!String::from_utf8_lossy(&terminal.scrollback()).contains("one-time-code"));
+        assert!(String::from_utf8_lossy(&terminal.scrollback()).contains("https://example.test/login"));
+        manager.close_private();
+        assert!(manager.get(&terminal.id).is_none());
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !terminal.is_exited() { tokio::time::sleep(Duration::from_millis(20)).await; }
+        }).await.expect("reload must terminate the private process");
     }
 
     #[tokio::test]

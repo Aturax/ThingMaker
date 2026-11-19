@@ -3,6 +3,17 @@
  * model menu's account switch).
  */
 export const accounts: Record<string, string> = {
+  "Remove from this computer anyway?": "¿Quitar de este equipo de todos modos?",
+  "Antigravity could not sign out. {reason} Removing the local profile leaves Google access unrevoked.": "Antigravity no ha podido cerrar sesión. {reason} Si quitas el perfil local, el acceso de Google seguirá autorizado.",
+  "Remove locally": "Quitar de este equipo",
+  "Kept the main settings. Your other copy is at {file}.": "Se ha conservado la configuración principal. Tu otra copia está en {file}.",
+  "Finish setup": "Completar configuración",
+  "Additional Gemini accounts use a private home folder. Git and Rust tools use your usual configuration. CLI settings and history are shared, and files saved in the private home are kept on removal.": "Las cuentas adicionales de Gemini usan una carpeta personal privada. Git y las herramientas de Rust usan tu configuración habitual. Los ajustes y el historial del CLI se comparten y los archivos guardados en esa carpeta se conservan al quitar la cuenta.",
+  "Uses your Google account through Antigravity CLI": "Usa tu cuenta de Google a través de Antigravity CLI",
+  "Finish signing in inside the terminal first.": "Termina de iniciar sesión en el terminal primero.",
+  "Complete Antigravity setup here, copy its sign-in URL into your browser, and paste the returned code into the terminal. Then choose Done signing in.": "Completa aquí la configuración de Antigravity, copia su URL de inicio de sesión en el navegador y pega el código recibido en el terminal. Después, pulsa Terminé de iniciar sesión.",
+  "Done signing in": "Terminé de iniciar sesión",
+  "Your Google account, through Antigravity CLI": "Tu cuenta de Google, a través de Antigravity CLI",
   "Main account": "Cuenta principal",
   "Remove the account “{name}”?": "¿Quitar la cuenta «{name}»?",
   "It is signed out and removed from ThingMaker. Your settings, MCP servers, skills and conversation history stay, because every account shares them.": "Se cierra su sesión y se quita de ThingMaker. Tus ajustes, servidores MCP, skills e historial de conversaciones se quedan, porque todas las cuentas los comparten.",

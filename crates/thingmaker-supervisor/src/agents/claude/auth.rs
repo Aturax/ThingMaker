@@ -73,6 +73,7 @@ pub fn read_status(executable: &PathBuf, args: &[String], config_dir: Option<&st
     };
     ProviderAuthStatus {
         provider: Provider::Claude,
+        setup_required: None,
         logged_in: field(&value, &["loggedIn", "logged_in"]).and_then(serde_json::Value::as_bool),
         method: field(&value, &["authMethod", "auth_method"]).and_then(serde_json::Value::as_str).map(str::to_string),
         account: field(&value, &["account", "email"]).and_then(serde_json::Value::as_str).map(str::to_string),
