@@ -184,6 +184,21 @@ export const api = {
   webBrowserOpen: () => call<SessionHandle>(COMMANDS.webBrowserOpen),
   webControl: (handle: SessionHandle, action: import("@thingmaker/contracts").WebAction) =>
     call<import("@thingmaker/contracts").WebFrame>(COMMANDS.webControl, { handle, action }),
+  voiceStatus: () => call<boolean>(COMMANDS.voiceStatus),
+  voicePermission: () => call<void>(COMMANDS.voicePermission),
+  voiceDownload: (onProgress: (event: import("./voice").VoiceDownload) => void) => {
+    const channel = new Channel<import("./voice").VoiceDownload>(); channel.onmessage = onProgress;
+    return call<void>(COMMANDS.voiceDownload, { channel });
+  },
+  voiceRemove: () => call<void>(COMMANDS.voiceRemove),
+  voiceCancelDownload: () => call<void>(COMMANDS.voiceCancelDownload),
+  voiceDevices: () => call<{ id: string; name: string }[]>(COMMANDS.voiceDevices),
+  voiceStart: (id: string, onEvent: (event: import("./voice").VoiceEvent) => void) => {
+    const channel = new Channel<import("./voice").VoiceEvent>(); channel.onmessage = onEvent;
+    return call<void>(COMMANDS.voiceStart, { id, channel });
+  },
+  voiceStop: (id: string, cancel = false) => call<void>(COMMANDS.voiceStop, { id, cancel }),
+  voiceCleanup: (text: string, localOnly = false) => call<string>(COMMANDS.voiceCleanup, { text, localOnly }),
   screenDevices: () => call<import("@thingmaker/contracts").ScreenDevice[]>(COMMANDS.screenDevices),
   screenCapture: (device: import("@thingmaker/contracts").ScreenDevice) => call<string>(COMMANDS.screenCapture, { device }),
   screenStreamStart: (device: import("@thingmaker/contracts").ScreenDevice, onEvent: (event: import("@thingmaker/contracts").ScreenStreamEvent) => void) => {

@@ -1,3 +1,4 @@
+import { VoiceInput } from "./VoiceInput";
 /**
  * A project's home: one box to start a session, the recent sessions under
  * it, and the rest (what agents read here, the workspace's details) folded
@@ -230,6 +231,7 @@ export function StartBox({ workspaceId, name, trusted, initialPreset, onStarted 
       {localAgent && selectedModel && <details><summary>{t("Skills and connections")}</summary>
         <MemberResources initialWorkspace={workspaceId} worker={{ name, provider: "local", model: selectedModel, capabilities: [], ...(resources ? { resources } : {}) }} onChange={(worker) => { setModel(worker.model ?? null); setResources(worker.resources); }} />
       </details>}
+      <VoiceInput key={workspaceId} target={workspaceId} draft={text} input={input} localOnly={chosen === "local"} onChange={setText} disabled={!trusted} />
       <div className="home-start-bar">
         {preset ? (
           <span className="model-chip home-chip-static" title={t("The team decides who leads")}>

@@ -9,6 +9,7 @@ pub mod web;
 pub mod screen_stream;
 pub mod screen_tools;
 pub mod suggestions;
+pub mod voice;
 pub mod artifacts;
 pub mod attachments;
 pub mod delegation;
