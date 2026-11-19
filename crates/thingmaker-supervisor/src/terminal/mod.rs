@@ -90,6 +90,14 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+// ConPTY asks xterm for its cursor position before it paints the sign-in URL.
+fn cursor_position_report(bytes: &[u8]) -> bool {
+    let Some(coords) = bytes.strip_prefix(b"\x1b[").and_then(|rest| rest.strip_suffix(b"R")) else { return false };
+    let mut fields = coords.split(|&byte| byte == b';');
+    let valid = |part: Option<&[u8]>| part.is_some_and(|p| !p.is_empty() && p.len() <= 5 && p.iter().all(u8::is_ascii_digit));
+    valid(fields.next()) && valid(fields.next()) && fields.next().is_none()
+}
+
 impl Terminal {
     pub fn is_private(&self) -> bool { self.private }
 
@@ -123,7 +131,7 @@ impl Terminal {
         if self.exited.load(Ordering::SeqCst) {
             return Err(DesktopError::not_ready("terminal process has exited"));
         }
-        if self.private {
+        if self.private && !cursor_position_report(bytes) {
             // Keep the prompt for reconnects; stop recording before anything a user types can be echoed.
             self.private_input_started.store(true, Ordering::SeqCst);
         }
@@ -150,11 +158,8 @@ impl Terminal {
             // ConPTY can still be waiting for its initial cursor reply when
             // the renderer disappears. Unblock that handshake before killing
             // the process, otherwise ClosePseudoConsole can wait indefinitely.
-            if self.private {
-            // Keep the prompt for reconnects; stop recording before anything a user types can be echoed.
             self.private_input_started.store(true, Ordering::SeqCst);
-        }
-        let mut writer = lock(&self.writer);
+            let mut writer = lock(&self.writer);
             let _ = writer.write_all(b"\x1b[1;1R");
             let _ = writer.flush();
         }
@@ -385,11 +390,21 @@ mod tests {
     #[tokio::test]
     async fn sign_in_terminals_cannot_be_listed_or_exported_and_reload_stops_them() {
         let manager = TerminalManager::new();
-        let spec = if cfg!(windows) { spawn("cmd.exe", &["/D", "/Q"]) } else { spawn("/bin/cat", &[]) };
+        let spec = if cfg!(windows) { spawn("cmd.exe", &["/D", "/Q", "/K", "echo Sign in at https://example.test/login"]) }
+            else { spawn("/bin/sh", &["-c", "echo 'Sign in at https://example.test/login'; exec cat"]) };
         let terminal = manager.open_private(spec).unwrap();
         assert!(manager.list().is_empty());
         assert!(manager.export(&terminal.id).is_err());
-        lock(&terminal.scrollback).extend(b"Sign in at https://example.test/login");
+        terminal.write(b"\x1b[24;80R").unwrap();
+        assert!(!terminal.private_input_started.load(Ordering::SeqCst));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !String::from_utf8_lossy(&terminal.scrollback()).contains("https://example.test/login") {
+                if cfg!(windows) && terminal.scrollback().windows(4).any(|window| window == b"\x1b[6n") {
+                    terminal.write(b"\x1b[1;1R").unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await.expect("prompt output captured after xterm answers ConPTY");
         for _ in 0..2 {
             assert!(String::from_utf8_lossy(&terminal.scrollback()).contains("https://example.test/login"));
         }

@@ -189,10 +189,10 @@ fn share_gemini(main: &Path, folder: &Path, home: &Path) -> std::io::Result<()> 
         if !source.is_dir() { continue; }
         if target.symlink_metadata().is_err() { gemini_link(&source, &target)?; }
     }
-    for name in ["settings.json", "keybindings.json"] {
+    for name in GEMINI_CLI_FILES {
         share_gemini_file(folder, &main_cli.join(name), &cli.join(name))?;
     }
-    for name in ["GEMINI.md", "settings.json", "trustedFolders.json", "projects.json"] {
+    for name in GEMINI_HOME_FILES {
         share_gemini_file(folder, &main.join(name), &gemini.join(name))?;
     }
     Ok(())
@@ -294,6 +294,9 @@ fn share_gemini_file(folder: &Path, source: &Path, target: &Path) -> std::io::Re
     Ok(())
 }
 
+const GEMINI_HOME_FILES: &[&str] = &["GEMINI.md", "settings.json", "trustedFolders.json", "projects.json"];
+const GEMINI_CLI_FILES: &[&str] = &["settings.json", "keybindings.json"];
+
 /// Remove credentials and provider links, retaining files and links tools wrote in `~`.
 pub fn remove_gemini_profile(folder: &Path) -> std::io::Result<()> {
     if folder.symlink_metadata().is_ok() && profile_link(folder)? {
@@ -311,6 +314,28 @@ pub fn remove_gemini_profile(folder: &Path) -> std::io::Result<()> {
                 let child = root.join(name);
                 if child.is_dir() && !profile_link(&child)? && std::fs::read_dir(&child)?.next().transpose()?.is_some() {
                     std::fs::rename(&child, folder.join(format!("gemini-{name}.saved-{}", uuid::Uuid::new_v4().simple())))?;
+                }
+            }
+        }
+        // Atomic saves can replace a shared file between the last preparation and removal.
+        // Keep independent settings outside the credential tree, even when logout/sync failed.
+        for (root, names) in [(&gemini, GEMINI_HOME_FILES), (&gemini.join("antigravity-cli"), GEMINI_CLI_FILES)] {
+            if !root.is_dir() || profile_link(root)? { continue; }
+            for name in names {
+                let path = root.join(name);
+                match path.symlink_metadata() {
+                    Ok(meta) if meta.is_file() => {
+                        let baseline = path.with_extension("thingmaker-shared-hash");
+                        let unchanged = baseline.symlink_metadata().is_ok_and(|m| m.is_file()) &&
+                            std::fs::read_to_string(baseline).ok().is_some_and(|hash|
+                                std::fs::read(&path).is_ok_and(|bytes| blake3::hash(&bytes).to_hex().as_str() == hash));
+                        if !unchanged {
+                            std::fs::rename(path, folder.join(format!("gemini-{name}.saved-{}", uuid::Uuid::new_v4().simple())))?;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
                 }
             }
         }

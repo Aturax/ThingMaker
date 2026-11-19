@@ -974,6 +974,14 @@ function switchesSession(snapshot: { provider?: Provider; capabilities?: { agent
   return parseLocalModel(pending.model).kind !== (isLocalChat(snapshot) ? "chat" : "agent");
 }
 
+const modelRequests = new Map<Provider, symbol>();
+
+function refreshAccountModels(get: Get, set: Set, provider: Provider) {
+  const { [provider]: _oldModels, ...providerModels } = get().providerModels;
+  set({ providerModels, usage: { ...get().usage, [provider]: null } });
+  void get().loadProviderModels(provider, true);
+}
+
 export const useStore = create<State>((set, get) => ({
   providers: null,
   providerVersions: null,
@@ -2461,8 +2469,11 @@ export const useStore = create<State>((set, get) => ({
   async loadProviderModels(provider, fresh = false) {
     const known = get().providerModels[provider];
     if (known && !fresh) return known;
+    const request = Symbol();
+    modelRequests.set(provider, request);
     try {
       const models = (await api.providerModels(provider)).filter((model) => !isRetiredModel(provider, model));
+      if (modelRequests.get(provider) !== request) return get().providerModels[provider] ?? [];
       set({ providerModels: { ...get().providerModels, [provider]: models } });
       return models;
     } catch {
@@ -3308,6 +3319,7 @@ export const useStore = create<State>((set, get) => ({
         if (!confirmed) return;
         await api.accountRemove(provider, id, true);
       }
+      refreshAccountModels(get, set, provider);
       await Promise.all([get().loadAccounts(provider), get().loadProviders()]);
       void get().refreshUsage(provider);
     } catch (error) {
@@ -3322,10 +3334,7 @@ export const useStore = create<State>((set, get) => ({
       set({ error: asError(error) });
       return;
     }
-    // Model catalogs and usage belong to the selected account too.
-    const { [provider]: _oldModels, ...providerModels } = get().providerModels;
-    set({ providerModels, usage: { ...get().usage, [provider]: null } });
-    void get().loadProviderModels(provider, true);
+    refreshAccountModels(get, set, provider);
     // The usage bars and sign-in status follow the account.
     set({ accounts: { ...get().accounts, [provider]: (get().accounts[provider] ?? []).map((account) => ({ ...account, active: account.id === id })) } });
     void get().loadProviders();

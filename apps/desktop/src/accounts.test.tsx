@@ -28,6 +28,25 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("accounts in Providers", () => {
+  it("keeps the current catalog when a previous account answers after a switch or removal", async () => {
+    const model = (id: string) => ({ id, name: id, needsCredits:false, efforts:[], inputImage:false, isDefault:false });
+    const account = useStore.getState();
+    let finishFirst!: (models: ReturnType<typeof model>[]) => void;
+    let finishSecond!: (models: ReturnType<typeof model>[]) => void;
+    vi.mocked(api.providerModels)
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { finishSecond = resolve; }))
+      .mockResolvedValueOnce([model("remaining")]);
+    const first = account.loadProviderModels("claude", true);
+    await account.setActiveAccount("claude", personal.id);
+    await account.removeAccount("claude", personal.id);
+    await waitFor(() => expect(useStore.getState().providerModels.claude?.[0]?.id).toBe("remaining"));
+    finishSecond([model("removed")]);
+    finishFirst([model("old")]);
+    expect(await first).toEqual([model("remaining")]);
+    expect(useStore.getState().providerModels.claude).toEqual([model("remaining")]);
+  });
+
   it("lists each account with who it is, and makes one active", async () => {
     render(<ProviderAccounts provider="claude" />);
     expect(await screen.findByText("Main account")).toBeTruthy();

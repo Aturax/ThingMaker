@@ -200,6 +200,8 @@ mod tests {
             assert!(token.exists());
             assert!(remove_gemini(&folder, true, async { panic!("local removal cannot require a working CLI") }).await.unwrap().is_none());
             assert!(!token.exists());
+            let saved = std::fs::read_dir(&folder).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("gemini-settings.json.saved-")).unwrap();
+            assert_eq!(std::fs::read_to_string(saved.path()).unwrap(), "unshared local change");
             assert_eq!(std::fs::read_to_string(main.join("settings.json")).unwrap(), "main change");
         }
     }
