@@ -53,13 +53,18 @@ pub struct WipeReport {
 
 #[tauri::command]
 pub async fn workspace_wipe_sessions(workspace_id: String, state: State<'_, AppState>) -> CommandResult<WipeReport> {
+    wipe_workspace(&state, &workspace_id).await
+}
+
+/// Wipe All for one workspace; quick chats use it when they are deleted.
+pub(crate) async fn wipe_workspace(state: &AppState, workspace_id: &str) -> CommandResult<WipeReport> {
     let record = state
-        .with_storage(|s| s.workspace_get(&workspace_id))
+        .with_storage(|s| s.workspace_get(workspace_id))
         .map_err(storage_error)?
         .ok_or_else(|| DesktopError::not_ready("workspace not found"))?;
     let root = PathBuf::from(&record.canonical_root);
     let sessions: Vec<_> = state
-        .with_storage(|s| s.session_list(&workspace_id))
+        .with_storage(|s| s.session_list(workspace_id))
         .map_err(storage_error)?
         .into_iter()
         .filter(|session| matches!(session.origin, SessionOrigin::Desktop | SessionOrigin::Side | SessionOrigin::Fork))
@@ -119,7 +124,7 @@ pub async fn workspace_wipe_sessions(workspace_id: String, state: State<'_, AppS
 
     // ThingMaker's own records, and the prompts its outbox kept.
     let row_ids: Vec<String> = sessions.iter().map(|session| session.id.clone()).collect();
-    let payloads = state.with_storage(|s| s.sessions_delete(&workspace_id, &row_ids)).map_err(storage_error)?;
+    let payloads = state.with_storage(|s| s.sessions_delete(workspace_id, &row_ids)).map_err(storage_error)?;
     let outbox = state.data_dir.join("outbox");
     for payload in payloads {
         match remove_inside(&state.data_dir.join(&payload), std::slice::from_ref(&outbox)) {
@@ -148,7 +153,7 @@ pub(crate) fn provider_folders(provider: Provider, home: &Path, data_dir: &Path)
 }
 
 #[derive(Debug, Default)]
-struct Removed {
+pub(crate) struct Removed {
     files: usize,
     history_lines: usize,
     problems: Vec<String>,
@@ -156,7 +161,7 @@ struct Removed {
 
 /// Removes the sessions' files from the providers' folders. Account folders
 /// link into the person's own, so each real path is removed once.
-fn wipe_files(root: &Path, claude_dirs: &[PathBuf], codex_homes: &[PathBuf], claude_ids: &[String], codex_ids: &[String]) -> Removed {
+pub(crate) fn wipe_files(root: &Path, claude_dirs: &[PathBuf], codex_homes: &[PathBuf], claude_ids: &[String], codex_ids: &[String]) -> Removed {
     let mut removed = Removed::default();
     let mut done: HashSet<PathBuf> = HashSet::new();
 

@@ -456,6 +456,11 @@ export type EnqueueOutcome = { outcome: "queued"; position: number } | { outcome
 
 export type TrustState = "untrusted" | "inspect_only" | "trusted_local";
 
+/** A conversation that belongs to no project: a workspace in an empty
+ *  folder ThingMaker made for it. A temporary one is deleted when ThingMaker
+ *  quits; `deleting` marks one left by the last run, waiting to go. */
+export type QuickChat = { workspaceId: string; temporary: boolean; createdAt: number; temporarySince?: number; deleting?: boolean };
+
 export type WorkspaceRecord = {
   id: string;
   environmentId: string;
@@ -2004,6 +2009,10 @@ export const COMMANDS = {
   localImage: "local_image",
   workspaceRemove: "workspace_remove",
   workspaceWipeSessions: "workspace_wipe_sessions",
+  quickChatList: "quick_chat_list",
+  quickChatCreate: "quick_chat_create",
+  quickChatSetTemporary: "quick_chat_set_temporary",
+  quickChatDelete: "quick_chat_delete",
   workspaceRenameFolder: "workspace_rename_folder",
   attachmentPick: "attachment_pick",
   attachmentAddPaths: "attachment_add_paths",

@@ -105,6 +105,12 @@ export function App() {
   const reducedMotion = useStore((s) => s.uiPrefs.reducedMotion);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   const setView = useStore((s) => s.setView);
+  // A quick chat's session gets the whole width: no side pane.
+  const quickSession = useStore((s) => {
+    if (s.view.kind !== "session") return false;
+    const workspaceId = s.sessions[s.view.sessionId]?.workspaceId;
+    return !!workspaceId && s.quickChats.some((chat) => chat.workspaceId === workspaceId);
+  });
 
   useEffect(() => {
     void bootstrap();
@@ -178,7 +184,7 @@ export function App() {
               {view.kind === "session" && (
                 <div className="session-split">
                   <SessionPanel key={view.sessionId} sessionId={view.sessionId} />
-                  {!IS_REMOTE && <OfficePane key={`office-${view.sessionId}`} sessionId={view.sessionId} />}
+                  {!IS_REMOTE && !quickSession && <OfficePane key={`office-${view.sessionId}`} sessionId={view.sessionId} />}
                 </div>
               )}
               {view.kind === "starting" && <StartingPanel />}
