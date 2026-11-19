@@ -620,7 +620,7 @@ fn expand_environment(value: &mut Value, env: &HashMap<String, String>) -> Resul
 
 /// Fail closed on older installations: this pilot was verified with these
 /// adapter/SDK versions, rather than assuming unknown versions honor options.
-pub fn check_harness(adapter_script: &Path, local: bool) -> Result<(), DesktopError> {
+pub fn check_harness(adapter_script: &Path) -> Result<(), DesktopError> {
     let package = adapter_script.parent().and_then(Path::parent).ok_or_else(|| DesktopError::not_ready("Cannot locate Claude ACP package"))?;
     let (adapter, sdk) = ((0, 106, 0), (0, 3, 322));
     for (file, minimum) in [(package.join("package.json"), adapter), (package.join("node_modules/@anthropic-ai/claude-agent-sdk/package.json"), sdk)] {
@@ -776,10 +776,10 @@ mod tests {
     fn missing_or_old_harness_is_rejected_before_launch() {
         let temp = tempfile::tempdir().unwrap();
         let script = temp.path().join("dist/index.js");
-        assert!(check_harness(&script, false).is_err());
+        assert!(check_harness(&script).is_err());
         write(&temp.path().join("package.json"), r#"{"version":"0.106.0"}"#);
         write(&temp.path().join("node_modules/@anthropic-ai/claude-agent-sdk/package.json"), r#"{"version":"0.3.322"}"#);
-        assert!(check_harness(&script, false).is_ok());
+        assert!(check_harness(&script).is_ok());
     }
 
     #[test]
