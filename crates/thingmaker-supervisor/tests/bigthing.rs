@@ -264,6 +264,12 @@ async fn a_spent_account_parks_the_run_with_its_reset_time_instead_of_blocking_i
 async fn a_running_goal_whose_session_is_not_open_reopens_it_and_carries_on() {
     let Some(fixture) = fixture_with(&["--follow-plan"]) else { return };
     let (goal_id, live) = fixture.goal(1).await;
+    let resources = thingmaker_supervisor::integrations::member_resources::ResourceSelection {
+        skills: vec!["skill:user:test".into()], mcps: vec![],
+    };
+    let team = json!({"orchestrator":{"provider":"claude","resources":resources},"combo":{}});
+    let edit = thingmaker_supervisor::storage::odyssey::GoalEdit { team: Some(Some(team)), ..Default::default() };
+    fixture.storage.lock().unwrap().odyssey_edit_goal(&goal_id, &edit).unwrap();
     // The app restarted: the session is in the record, not open.
     fixture.host.sessions.lock().unwrap().clear();
     let _ = live.actor.stop().await;
@@ -271,6 +277,7 @@ async fn a_running_goal_whose_session_is_not_open_reopens_it_and_carries_on() {
     let view = fixture.until(&goal_id, "the goal to complete", 60, |view| view.goal.state == OdysseyState::Complete).await;
     let opened = fixture.host.opened.lock().unwrap().clone();
     assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0].resources.as_ref(), Some(&resources));
     assert_eq!(opened[0].resume.as_deref(), Some(live.agent_session_id.as_str()), "resumed, not replaced");
     assert!(view.journal.iter().any(|entry| entry.summary == "Reopened the run's session"));
 }

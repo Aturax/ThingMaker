@@ -199,7 +199,7 @@ impl WorkerLauncher for HostLauncher {
             let snapshot = actor.snapshot().await?;
             let recorded = snapshot.agent_session_id.clone().unwrap_or_else(|| reserved.as_str().to_string());
             let row = state
-                .with_storage(|s| s.session_upsert(&record.id, &recorded, SessionOrigin::Desktop, spec.slot.provider))
+                .with_storage(|s| s.session_upsert_with_resources(&record.id, &recorded, SessionOrigin::Desktop, spec.slot.provider, spec.slot.resources.as_ref()))
                 .map_err(storage_error)?;
             if spec.slot.provider == Provider::Local && let Some(model) = &spec.slot.model {
                 let setup = super::session::LocalSessionSetup { model: model.clone(), resources: spec.slot.resources.clone() };
