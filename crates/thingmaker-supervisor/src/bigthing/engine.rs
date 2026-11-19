@@ -1526,8 +1526,8 @@ impl Engine {
                 {
                     return Err(DesktopError::not_ready("the Claude account has no room right now"));
                 }
-                let (model, effort) = team_of(&goal).filter(|team| team.0.provider == Some(provider)).map(|team| (team.0.model, team.0.effort)).unwrap_or_default();
-                let live = self.inner.host.open(OpenSpec { workspace_id: goal.workspace_id.clone(), provider, model, effort, combo, resume: None }).await?;
+                let (model, effort, resources) = team_of(&goal).filter(|team| team.0.provider == Some(provider)).map(|team| (team.0.model, team.0.effort, team.0.resources)).unwrap_or_default();
+                let live = self.inner.host.open(OpenSpec { workspace_id: goal.workspace_id.clone(), provider, model, effort, resources, combo, resume: None }).await?;
                 self.inner.host.emit(EngineEvent::SessionOpened { workspace_id: live.workspace_id.clone(), handle: live.handle.clone(), agent_session_id: live.agent_session_id.clone() });
                 live
             }
@@ -1793,6 +1793,8 @@ fn phase_word(phase: TurnPhase) -> &'static str {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamLead {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<crate::integrations::member_resources::ResourceSelection>,
     #[serde(default)]
     pub provider: Option<Provider>,
     #[serde(default)]

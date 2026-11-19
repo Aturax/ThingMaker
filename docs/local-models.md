@@ -2,8 +2,9 @@
 
 Models installed in [Ollama](https://ollama.com) on this computer, as a
 fourth provider beside Claude Code, Codex and Gemini. **Free:** nothing is
-billed and no account is used. Sessions start private. A local agent can
-access public websites if you enable web access in its Web tab.
+billed and no account is used. Chat mode only contacts Ollama. Agent mode can search and read public
+websites through ThingMaker Web by default. To run an agent without these
+tools, customize its resources and leave ThingMaker Web unselected.
 
 ## Two ways to run a model
 
@@ -34,8 +35,7 @@ not to think (`/no_think`), because thinking takes most of a turn on a laptop.
 - **Claude Code's background traffic is off for agents** (telemetry, error
   reports, feature flags, update checks). They use their own settings folder
   in ThingMaker's data folder, never `~/.claude`, so the person's Claude login,
-  MCP servers and plugins are not used. The shared Web tab can authorize
-  ThingMaker's separate web process for the current attachment.
+  MCP servers and plugins are not used. ThingMaker handles web requests in a separate process for each attachment.
 - **A local lead hires only local helpers**, and Big Thing never moves a local
   goal to another provider.
 - **A local helper under a cloud lead**, or a local seat in a mixed

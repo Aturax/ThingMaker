@@ -68,6 +68,7 @@ import {
   type McpInstallOutcome,
   type McpOverview,
   type MemberResourceCatalog,
+  type MemberResourceSelection,
   type McpProbe,
   type McpScope,
   type McpServerSpec,
@@ -161,6 +162,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 }
 
 export type OpenRequest = {
+  resources?: MemberResourceSelection;
   workspaceId: string;
   mode: { mode: "new" } | { mode: "resume"; session_id: string } | { mode: "fork"; session_id: string };
   /** Which provider to launch. On a resume the session's own record wins. */
@@ -275,7 +277,7 @@ export const api = {
   skillRemove: (scope: SkillScope, workspaceId: string | null, directoryName: string, keepBackup: boolean) =>
     call<RemovedSkill>(COMMANDS.skillRemove, { request: { scope, workspaceId, directoryName, keepBackup } }),
   mcpOverview: (workspaceId: string | null) => call<McpOverview>(COMMANDS.mcpOverview, { workspaceId }),
-  memberResources: (workspaceId: string | null, provider: Provider) => call<MemberResourceCatalog>(COMMANDS.memberResources, { workspaceId, provider }),
+  memberResources: (workspaceId: string | null, provider: Provider, local = false) => call<MemberResourceCatalog>(COMMANDS.memberResources, { workspaceId, provider, local }),
   mcpCatalog: () => call<McpCatalogEntry[]>(COMMANDS.mcpCatalog),
   mcpParse: (text: string, name?: string) => call<McpServerSpec[]>(COMMANDS.mcpParse, { request: { text, name: name ?? null } }),
   mcpInstall: (workspaceId: string | null, spec: McpServerSpec, providers: Provider[], scope: McpScope) =>

@@ -174,12 +174,14 @@ impl WorkerLauncher for HostLauncher {
             // Resolved once: the revision recorded is the one this launch used.
             let resolved = super::member_resources::resolve(&state, &spec.root, &spec.slot)?;
             let revision = revision_of(&state, &spec.root, &spec.slot, resolved.as_ref());
+            let builtin_web = resolved.as_ref().is_some_and(|r| r.builtin_web);
             let resource_files = match resolved {
                 Some(resources) => thingmaker_supervisor::integrations::member_resources::apply_to_launch(resources, &mut launch)?,
                 None => None,
             };
             let program = super::session::program_of(&target, &launch);
             let mut config = SessionActorConfig::new(target, launch);
+            config.builtin_web = builtin_web;
             config.resource_files = resource_files;
             config.environment = super::session::launch_environment(&state).with_program_dir(&program);
             config.before_prompt = Some(super::review::turn_snapshots(&state, &record.id, &record.canonical_root));
@@ -193,6 +195,8 @@ impl WorkerLauncher for HostLauncher {
                     config.environment = config.environment.clone().with_set("MCP_TOOL_TIMEOUT", CLAUDE_MCP_TOOL_TIMEOUT_MS);
                 }
             }
+            #[cfg(windows)]
+            super::local_mcp::prepare(&state, &mut config).await?;
             let web = super::web::prepare(&state, &mut config).await;
             let actor = SessionActor::open(config).await?;
             let snapshot = actor.snapshot().await?;
@@ -200,6 +204,10 @@ impl WorkerLauncher for HostLauncher {
             let row = state
                 .with_storage(|s| s.session_upsert(&record.id, &recorded, SessionOrigin::Desktop, spec.slot.provider))
                 .map_err(storage_error)?;
+            if spec.slot.provider == Provider::Local && let Some(model) = &spec.slot.model {
+                let setup = super::session::LocalSessionSetup { model: model.clone(), resources: spec.slot.resources.clone() };
+                state.with_storage(|s| s.setting_set("localSessionSetup", &row.id, &setup)).map_err(storage_error)?;
+            }
             let parent_agent_id = state.agent_session_id(&spec.orchestrator);
             let parent = state.with_storage(|s| s.session_by_agent_id(&record.id, &parent_agent_id)).ok().flatten();
             let _ = state.with_storage(|s| {

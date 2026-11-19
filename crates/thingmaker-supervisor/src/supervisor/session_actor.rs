@@ -120,7 +120,10 @@ pub struct SessionActorConfig {
     pub fork_at: Option<String>,
     pub before_prompt: Option<BeforePrompt>,
     /// Keeps generated skill-only plugins alive for this actor's lifetime.
+    pub builtin_web: bool,
     pub resource_files: Option<Arc<tempfile::TempDir>>,
+    /// Closing the control pipe stops the Windows stdio bridge and its children.
+    pub local_mcp_bridge: Option<Arc<tokio::process::ChildStdin>>,
 }
 
 impl SessionActorConfig {
@@ -140,7 +143,9 @@ impl SessionActorConfig {
             fork_from: None,
             fork_at: None,
             before_prompt: None,
+            builtin_web: false,
             resource_files: None,
+            local_mcp_bridge: None,
         }
     }
 }
@@ -414,6 +419,7 @@ impl SessionActor {
                 };
                 (ollama::local_address(spec.env.get(variable).map(String::as_str)), local.served.clone())
             }),
+            AgentLaunch::Codex(options) if options.local => options.model.clone().map(|model| (crate::agents::local::ollama::address(), model)),
             _ => None,
         };
         let generation = config.attachment_generation;
@@ -1134,15 +1140,15 @@ impl ActorState {
                     // run monitor and the task owner column already read, so
                     // none of those needs to know which agent it is watching.
                     let model = self.selected_model();
-                    let event = match self.launch.provider() {
-                        Provider::Claude | Provider::Local => claude::subagents::subagent_event(&merged, model.as_deref(), now_unix_ms()),
-                        Provider::Codex => codex::subagents::subagent_event(&merged, model.as_deref(), now_unix_ms()),
-                        Provider::Gemini => None,
+                    let event = match &self.launch {
+                        AgentLaunch::Claude(_) => claude::subagents::subagent_event(&merged, model.as_deref(), now_unix_ms()),
+                        AgentLaunch::Codex(_) => codex::subagents::subagent_event(&merged, model.as_deref(), now_unix_ms()),
+                        AgentLaunch::Gemini(_) => None,
                     };
                     if let Some(event) = event {
                         self.emit(SessionEvent::RuntimeEvent(event));
                     }
-                    if matches!(self.launch.provider(), Provider::Claude | Provider::Local) {
+                    if matches!(self.launch, AgentLaunch::Claude(_)) {
                         self.note_background(&id, &merged);
                     }
                     self.tool_calls.insert(id.clone(), merged);

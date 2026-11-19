@@ -72,11 +72,10 @@ export function WebView({ handle, standalone = false }: { handle: SessionHandle;
           {tabs?.map(tab => <button className="button small" key={tab.key} onClick={() => void request({kind:"attachBrowse",key:tab.key})}>{tab.title} · {tab.url}</button>)}
         </>}
         {frame.chrome && <>
-          <p role="status">{t(frame.chrome === "disconnected" ? "Chrome tab disconnected" : frame.human ? "You control the Chrome tab" : "The agent controls the Chrome tab")}</p>
+          <p role="status">{t(frame.chrome === "disconnected" ? "Chrome tab disconnected" : "Chrome tab shared")}</p>
           <button className="button small" onClick={() => void request({kind:"unshare"})}>{t("Return to built-in browser")}</button>
         </>}
-        {!standalone && frame.chrome !== "disconnected" && <button className="button small" onClick={() => void request({ kind: frame.human ? "release" : "take" })}>{t(frame.human ? "Return control to agent" : "Take control")}</button>}
-        {frame.human && !frame.chrome && <form onSubmit={event => {
+        {!frame.chrome && <form onSubmit={event => {
           event.preventDefault();
           const value = url.trim();
           if (value) void request(/^https?:\/\//i.test(value) ? { kind: "open", url: value } : { kind: "search", query: value });
@@ -86,12 +85,12 @@ export function WebView({ handle, standalone = false }: { handle: SessionHandle;
         </form>}
         <p className="small" dir="auto">{frame.url || frame.activity || t("Waiting for a web page")}</p>
         {frame.image && <img className="web-frame" src={"data:image/jpeg;base64," + frame.image} alt={t("Shared browser page")}
-          tabIndex={frame.human ? 0 : -1}
-          onClick={event => { if (frame.human) { event.currentTarget.focus(); void request({ kind: "click", revision: frame.revision, ...point(event) }); } }}
-          onWheel={event => { if (frame.human && !pending.current) void request({ kind: "scroll", revision: frame.revision, ...point(event), dy: event.deltaY }); }}
-          onPaste={event => { if (frame.human) { event.preventDefault(); void request({ kind: "text", revision: frame.revision, text: event.clipboardData.getData("text") }); } }}
+          tabIndex={0}
+          onClick={event => { event.currentTarget.focus(); void request({ kind: "click", revision: frame.revision, ...point(event) }); }}
+          onWheel={event => { if (!pending.current) void request({ kind: "scroll", revision: frame.revision, ...point(event), dy: event.deltaY }); }}
+          onPaste={event => { event.preventDefault(); void request({ kind: "text", revision: frame.revision, text: event.clipboardData.getData("text") }); }}
           onKeyDown={event => {
-            if (!frame.human || event.nativeEvent.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
+            if (event.nativeEvent.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
             if (event.key === "Escape") { event.currentTarget.blur(); return; }
             if (event.key.length === 1) {
               event.preventDefault(); void request({ kind: "text", revision: frame.revision, text: event.key });

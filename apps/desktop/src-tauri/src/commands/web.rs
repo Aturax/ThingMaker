@@ -7,7 +7,7 @@ use thingmaker_supervisor::{DesktopError, SessionHandle, security::EnvironmentPr
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines}, process::{Child, ChildStdin, ChildStdout, Command}, sync::Mutex};
 
 use thingmaker_supervisor::{
-    agents::{Provider, local::LocalKind},
+    agents::local::LocalKind,
     supervisor::{AgentLaunch, SessionActor, SessionActorConfig, SessionEvent},
 };
 
@@ -34,6 +34,15 @@ fn reserve_browse_tab(key: &str) -> Result<Arc<()>, String> {
     Ok(lease)
 }
 
+#[cfg(windows)]
+pub(super) fn windows_runtime(state: &AppState) -> Result<PathBuf, String> {
+    let installed = state.resource_dir.as_ref().map(|p| p.join("web-runtime"));
+    #[cfg(debug_assertions)]
+    let installed = installed.filter(|p| p.join("node.exe").is_file()).or_else(|| Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist-web")));
+    let root = installed.ok_or("The installed web runtime is missing")?;
+    dunce::canonicalize(root).map_err(|_| "The web runtime is missing. Reinstall ThingMaker.".to_string())
+}
+
 impl WebSession {
     pub async fn launch(state: &AppState, enabled: bool) -> Result<(Connection, Value), String> {
         let mut env_profile = EnvironmentProfile::trusted_local();
@@ -41,11 +50,7 @@ impl WebSession {
         let env = env_profile.allow("WEB_SCOUT_SEARXNG_URL").allow("PLAYWRIGHT_BROWSERS_PATH").resolve(std::env::vars());
         #[cfg(windows)]
         let mut command = {
-            let installed = state.resource_dir.as_ref().map(|p| p.join("web-runtime"));
-            #[cfg(debug_assertions)]
-            let installed = installed.filter(|p| p.join("node.exe").is_file()).or_else(|| Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist-web")));
-            let root = installed.ok_or("The installed web runtime is missing")?;
-            let root = dunce::canonicalize(root).map_err(|_| "The web runtime is missing. Reinstall ThingMaker.")?;
+            let root = windows_runtime(state)?;
             let mut cmd = Command::new(root.join("node.exe"));
             cmd.arg(root.join("session.mjs")).current_dir(&root).env_clear().envs(env)
                 .env("THINGMAKER_BROWSE_BIN_DIR", state.data_dir.join("tools/browse"))
@@ -117,22 +122,20 @@ impl WebSession {
 }
 
 pub async fn prepare(state: &AppState, config: &mut SessionActorConfig) -> Option<Result<Connection, String>> {
-    let enabled = config.launch.provider() != Provider::Local;
     // A worker with a custom tool allowlist gets exactly its chosen resources.
     let instructions = match &mut config.launch {
-        AgentLaunch::Claude(options) if options.resources.is_none()
+        AgentLaunch::Claude(options) if (options.resources.is_none() || config.builtin_web)
             && options.local.as_ref().is_none_or(|l| l.kind == LocalKind::Agent) => &mut options.append_system_prompt,
-        AgentLaunch::Codex(options) if options.resources.is_none() => &mut options.developer_instructions,
+        AgentLaunch::Codex(options) if options.resources.is_none() || config.builtin_web => &mut options.developer_instructions,
         _ => return None,
     };
-    Some(WebSession::launch(state, enabled).await.map(|(session, entry)| {
+    Some(WebSession::launch(state, true).await.map(|(session, entry)| {
         config.mcp_servers.push(entry);
-        instructions.get_or_insert_with(String::new).push_str("\nUse thingmaker-web web_search and web_read for background research. When text is insufficient for a chart or diagram, request web_read with screenshot=true. Use web_open, web_page and web_act for the shared Web tab. After a human handoff inspect web_page before acting.");
+        instructions.get_or_insert_with(String::new).push_str("\nUse thingmaker-web web_search and web_read for background research. When text is insufficient for a chart or diagram, request web_read with screenshot=true. Use web_open, web_page and web_act for the shared Web tab. The user can edit the same page at any time. If the page changes unexpectedly, inspect web_page and continue from its current state.");
         session
     }))
 }
 
-const RESUME_WEB: &str = "I returned control of the shared Web tab. Inspect the current page with web_page. Preserve my edits and continue with the next requested step using the current selection.";
 
 pub fn attach(state: &AppState, actor: &SessionActor, web: Option<Result<Connection, String>>) {
     let Some(entry) = web else { return };
@@ -156,7 +159,6 @@ pub fn attach(state: &AppState, actor: &SessionActor, web: Option<Result<Connect
 #[tauri::command]
 pub async fn web_browser_open(state: State<'_, AppState>) -> CommandResult<SessionHandle> {
     let (connection, _) = WebSession::launch(&state, true).await.map_err(DesktopError::io)?;
-    connection.lock().await.control(json!({"kind":"take"})).await.map_err(DesktopError::io)?;
     let id = format!("browser-{}", uuid::Uuid::new_v4());
     state.web_sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), Ok(connection));
     Ok(SessionHandle { id, attachment_generation: thingmaker_supervisor::DecimalId(1) })
@@ -164,46 +166,21 @@ pub async fn web_browser_open(state: State<'_, AppState>) -> CommandResult<Sessi
 
 #[tauri::command]
 pub async fn web_control(handle: SessionHandle, action: Value, state: State<'_, AppState>) -> CommandResult<Value> {
-    let actor = if handle.id.starts_with("browser-") {
+    if handle.id.starts_with("browser-") {
         if action["kind"] == "close" {
             state.web_sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(&handle.id);
             return Ok(Value::Null);
         }
-        None
-    } else { Some(super::session::actor_for(&state, &handle)?) };
+    } else {
+        super::session::actor_for(&state, &handle)?;
+    }
     let session = state.web_sessions.lock().unwrap_or_else(|e| e.into_inner()).get(&handle.id).cloned()
         .ok_or_else(|| DesktopError::not_ready("Web requires a Claude Code, Codex, or local agent session."))?
         .map_err(DesktopError::not_ready)?;
     if action.to_string().len() > 32768 { return Err(DesktopError::limit_exceeded("Web input too large")); }
-    control_for_actor(&session, action, actor.as_ref()).await
-}
-
-async fn control_for_actor(session: &Connection, action: Value, actor: Option<&SessionActor>) -> CommandResult<Value> {
     let mut session = session.lock().await;
-    let release = action["kind"] == "release";
-    let taking_browse = action["kind"] == "take" && session.browse_lease.is_some();
-    if release && session.browse_lease.is_some() && let Some(actor) = actor {
-        // An in-flight turn may retry a blocked click. Keep its access paused
-        // until it settles, then give the fresh page to the continuation.
-        let mut events = actor.subscribe();
-        tokio::time::timeout(Duration::from_secs(50), async {
-            while actor.snapshot().await?.foreground.is_active() {
-                if events.recv().await.is_none() { return Err(DesktopError::not_ready("Agent session closed")); }
-            }
-            Ok(())
-        }).await.map_err(|_| DesktopError::not_ready("The previous turn is still active. You still control the tab."))??;
-    }
-    let frame = tokio::time::timeout(Duration::from_secs(65), session.control(action)).await
-        .map_err(|_| DesktopError::not_ready("Web request timed out"))?.map_err(DesktopError::io)?;
-    // Pause tool access first. Interrupt the active turn so a model retrying its
-    // previous action cannot keep the handoff waiting indefinitely.
-    if taking_browse && let Some(actor) = actor && actor.snapshot().await?.foreground.is_active() {
-        actor.cancel().await?;
-    }
-    if release && let Some(actor) = actor {
-        actor.enqueue_text(format!("web-{}", uuid::Uuid::new_v4()), RESUME_WEB).await?;
-    }
-    Ok(frame)
+    tokio::time::timeout(Duration::from_secs(65), session.control(action)).await
+        .map_err(|_| DesktopError::not_ready("Web request timed out"))?.map_err(DesktopError::io)
 }
 
 #[cfg(test)]
@@ -221,9 +198,61 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         let state = AppState::initialize(root, None).unwrap();
-        check_live_read(&state, local_codex_config(root), false).await;
+        check_live_read(&state, local_codex_config(root)).await;
     }
 
+    #[tokio::test]
+    #[ignore = "requires a tool-capable Ollama model, Codex, staged web runtime and internet"]
+    async fn local_agent_default_web_and_explicit_opt_out() {
+        use thingmaker_supervisor::{acp::SessionUpdate, agents::codex::launch::CodexResources};
+
+        for private in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let state = AppState::initialize(temp.path(), None).unwrap();
+            let mut config = local_codex_config(temp.path());
+            let AgentLaunch::Codex(options) = &mut config.launch else { unreachable!() };
+            std::fs::create_dir(temp.path().join("tmp")).unwrap();
+            options.local = true;
+            #[cfg(windows)]
+            {
+                let launcher = std::env::var_os("THINGMAKER_WEB_TEST_DESKTOP").expect("ThingMaker executable");
+                thingmaker_supervisor::agents::local::sandbox::prepare(temp.path(), temp.path(), &[options.program.parent().unwrap().into()]).unwrap();
+                config.target = LaunchTarget { executable: launcher.into(), prefix_args: vec![thingmaker_appcontainer::LAUNCH_ARG.into(), options.program.to_string_lossy().into_owned()] };
+            }
+            config.environment = config.environment.with_program_dir(&options.program);
+            if private {
+                options.resources = Some(CodexResources { skills: vec![], mcps: Default::default() });
+            }
+            let web = prepare(&state, &mut config).await.transpose().unwrap();
+            assert_eq!(web.is_none(), private);
+            if let Some(connection) = &web {
+                let frame = connection.lock().await.control(json!({"kind":"frame"})).await.unwrap();
+                assert_eq!(frame["enabled"], true);
+            }
+            let actor = SessionActor::open(config).await.unwrap();
+            let mut events = actor.subscribe();
+            let mut completed = std::collections::BTreeSet::new();
+            actor.submit_text("permission-check", "Busca en la documentación oficial de Playwright para JavaScript cómo instalar Chromium con la CLI. Usa exclusivamente thingmaker-web: web_search con site playwright.dev y luego web_read. Dame el comando y cita la URL que has leído. Si no dispones de esas herramientas, indícalo.").await.unwrap();
+            tokio::time::timeout(Duration::from_secs(180), async {
+                loop {
+                    let event = events.recv().await.unwrap();
+                    match &event.payload {
+                        SessionEvent::Update(SessionUpdate::ToolCallUpdate(tool)) if tool.status.as_deref() == Some("completed") => {
+                            if let Some(name) = &tool.name { completed.insert(name.clone()); }
+                        }
+                        SessionEvent::Turn(TurnEffect::Settled { phase, .. }) => {
+                            assert_eq!(*phase, TurnPhase::Succeeded);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }).await.unwrap();
+            actor.stop().await.unwrap();
+            assert_eq!(completed.contains("web_search"), !private);
+            assert_eq!(completed.contains("web_read"), !private);
+        }
+    }
     fn local_codex_config(root: &std::path::Path) -> SessionActorConfig {
         let program = PathBuf::from(std::env::var_os("THINGMAKER_CODEX").expect("Codex executable"));
         let account = root.join("codex");
@@ -257,25 +286,28 @@ mod tests {
         let settings = json!({"code":frame["pairingCode"], "relay":frame["relayAddress"], "server":server});
         input.write_all(format!("{settings}\n").as_bytes()).await.unwrap();
         tokio::time::timeout(Duration::from_secs(200), async {
-            async fn handle_ui(actor: &SessionActor, web: &Connection, input: &mut ChildStdin, line: &str) {
+            async fn handle_ui(web: &Connection, input: &mut ChildStdin, line: &str) {
                 let action = serde_json::from_str(line).unwrap();
-                let frame = control_for_actor(web, action, Some(actor)).await.unwrap();
+                let frame = web.lock().await.control(action).await.unwrap();
                 input.write_all(format!("{frame}\n").as_bytes()).await.unwrap();
             }
             loop {
                 let line = output.next_line().await.unwrap().expect("Chrome test exited before lending the tab");
                 if line == "shared" { break; }
-                handle_ui(&actor, &web, &mut input, &line).await;
+                handle_ui(&web, &mut input, &line).await;
             }
-            // Start the first agent turn with an explicit job. The return after
-            // the human edit below must trigger its own continuation in this chat.
-            web.lock().await.control(json!({"kind":"release"})).await.unwrap();
-            actor.submit_text("chrome-test", "Use thingmaker-web on the shared tab. Inspect web_page, then select Books now using web_act with action select, role combobox, name Category and value Books. Stop after selecting Books. Later, when I return control, inspect the page again and click the visible button using its new snapshot ref. Its full name is Open followed by the currently selected category.").await.unwrap();
+            let mut events = actor.subscribe();
+            actor.submit_text("chrome-test", "Inspect the shared tab with web_page, select Books using web_act with role combobox, name Category and value Books, then finish this turn.").await.unwrap();
             input.write_all(b"start\n").await.unwrap();
             loop {
                 let line = output.next_line().await.unwrap().expect("Chrome test exited before completing");
                 if line == "Games opened" { break; }
-                handle_ui(&actor, &web, &mut input, &line).await;
+                if line == "edited" {
+                    while !matches!(events.recv().await.unwrap().payload, SessionEvent::Turn(TurnEffect::Settled { .. })) {}
+                    actor.submit_text("chrome-edited", "Use thingmaker-web web_page now. Click the visible Open button for the currently selected category using web_act action click and its current snapshot ref.").await.unwrap();
+                    continue;
+                }
+                handle_ui(&web, &mut input, &line).await;
             }
             drop(input);
             assert!(test.wait().await.unwrap().success());
@@ -286,8 +318,8 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "requires the installed ThingMaker AppContainer, its loopback permission and a tool-capable Ollama model"]
-    async fn local_claude_reads_a_source_after_web_is_enabled() {
-        use thingmaker_supervisor::agents::{claude::launch::ClaudeLaunchOptions, local::LocalTarget};
+    async fn local_claude_reads_a_source_with_default_web_access() {
+        use thingmaker_supervisor::agents::{Provider, claude::launch::ClaudeLaunchOptions, local::LocalTarget};
         let profile = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("Packages/ThingMaker.LocalModels/AC");
         let scratch = tempfile::tempdir_in(profile).unwrap();
         let root = scratch.path();
@@ -306,16 +338,13 @@ mod tests {
         let target = LaunchTarget { executable: launcher, prefix_args: vec![thingmaker_appcontainer::LAUNCH_ARG.into(), adapter.program.to_string_lossy().into_owned()] };
         let mut config = SessionActorConfig::new(target, AgentLaunch::Claude(options));
         config.environment = config.environment.with_program_dir(&adapter.program);
-        check_live_read(&state, config, true).await;
+        check_live_read(&state, config).await;
     }
 
-    async fn check_live_read(state: &AppState, mut config: SessionActorConfig, private: bool) {
+    async fn check_live_read(state: &AppState, mut config: SessionActorConfig) {
         let web = prepare(state, &mut config).await.unwrap().unwrap();
-        if private {
-            let frame = web.lock().await.control(json!({"kind":"frame"})).await.unwrap();
-            assert_eq!(frame["enabled"], false);
-            web.lock().await.control(json!({"kind":"enable"})).await.unwrap();
-        }
+        let frame = web.lock().await.control(json!({"kind":"frame"})).await.unwrap();
+        assert_eq!(frame["enabled"], true);
         // Random labels and bar heights exist only in canvas pixels in the tool result.
         let labels: Vec<_> = (0..3).map(|_| uuid::Uuid::new_v4().simple().to_string()[..4].to_uppercase()).collect();
         let tallest = uuid::Uuid::new_v4().as_bytes()[0] as usize % labels.len();
@@ -340,12 +369,10 @@ mod tests {
         let fixture = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         {
             let mut session = web.lock().await;
-            session.control(json!({"kind":"take"})).await.unwrap();
             let frame = session.control(json!({"kind":"open","url":format!("{origin}/form")})).await.unwrap();
             let revision = &frame["revision"];
             session.control(json!({"kind":"key","key":"Tab","revision":revision})).await.unwrap();
             session.control(json!({"kind":"text","text":draft,"revision":revision})).await.unwrap();
-            session.control(json!({"kind":"release"})).await.unwrap();
         }
         let actor = SessionActor::open(config).await.unwrap();
         let mut events = actor.subscribe();

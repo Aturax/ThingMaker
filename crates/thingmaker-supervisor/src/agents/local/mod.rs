@@ -62,11 +62,17 @@ pub fn window_for(name: &str, chosen: Option<u64>) -> u64 {
 /// Splits a stored model id into its kind and Ollama name. A bare name is a
 /// chat: that is what a person most often wants from a local model.
 pub fn parse_model(id: &str) -> (LocalKind, &str) {
-    if let Some(name) = id.strip_prefix(AGENT_PREFIX) {
+    if let Some(name) = id.strip_prefix("@agent/@codex/").or_else(|| id.strip_prefix(AGENT_PREFIX)) {
         (LocalKind::Agent, name)
     } else {
         (LocalKind::Chat, id.strip_prefix(CHAT_PREFIX).unwrap_or(id))
     }
+}
+
+pub fn agent_harness(id: &str) -> Option<crate::agents::Provider> {
+    id.starts_with(AGENT_PREFIX).then(|| if id.starts_with("@agent/@codex/") {
+        crate::agents::Provider::Codex
+    } else { crate::agents::Provider::Claude })
 }
 
 pub fn model_id(kind: LocalKind, name: &str) -> String {
@@ -191,7 +197,8 @@ pub fn find_ollama(home: &Path) -> Option<PathBuf> {
 /// Whether a local session's conversation exists, for a resume: a chat's
 /// file, or the agent's Claude Code transcript.
 pub fn conversation_exists(home: &Path, root: &Path, session_id: &str) -> bool {
-    chat_file(home, session_id).is_some_and(|path| path.is_file())
+    crate::agents::codex::transcript_usage::find_rollout(&home.join("codex"), session_id).is_some()
+        || chat_file(home, session_id).is_some_and(|path| path.is_file())
         || crate::agents::claude::transcript_usage::transcript_path_in(&LocalTarget::claude_dir(home), root, session_id).is_file()
 }
 
@@ -220,16 +227,18 @@ pub fn catalog(models: &[ollama::LocalModel]) -> Vec<crate::agents::auth::Provid
             is_default: false,
         });
         if model.uses_tools() {
-            out.push(crate::agents::auth::ProviderModel {
-                id: model_id(LocalKind::Agent, &model.name),
-                name: model.name.clone(),
-                description: Some(format!("Agent · {facts}")),
-                needs_credits: false,
-                efforts: Vec::new(),
-                default_effort: None,
-                input_image: model.sees_images(),
-                is_default: false,
-            });
+            for (prefix, harness) in [(AGENT_PREFIX, "Claude Code"), ("@agent/@codex/", "Codex")] {
+                out.push(crate::agents::auth::ProviderModel {
+                    id: format!("{prefix}{}", model.name),
+                    name: format!("{} · {harness}", model.name),
+                    description: Some(format!("Agent · {facts}")),
+                    needs_credits: false,
+                    efforts: Vec::new(),
+                    default_effort: None,
+                    input_image: model.sees_images(),
+                    is_default: false,
+                });
+            }
         }
     }
     if let Some(first) = out.first_mut() {
@@ -314,7 +323,7 @@ mod tests {
         let model = |name: &str, capabilities: &[&str]| ollama::LocalModel { name: name.into(), family: String::new(), parameter_size: "8B".into(), quantization: "Q4_K_M".into(), size_bytes: 5_200_000_000, context_length: Some(40960), capabilities: capabilities.iter().map(|c| c.to_string()).collect(), kv_bytes_per_token: 147_456 };
         let list = catalog(&[model("gemma3:4b", &["completion", "vision"]), model("qwen3:8b", &["completion", "tools", "thinking"])]);
         let ids: Vec<&str> = list.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, ["@chat/gemma3:4b", "@chat/qwen3:8b", "@agent/qwen3:8b"]);
+        assert_eq!(ids, ["@chat/gemma3:4b", "@chat/qwen3:8b", "@agent/qwen3:8b", "@agent/@codex/qwen3:8b"]);
         assert!(list[0].input_image);
         assert_eq!(list[1].efforts, ["off", "on"], "a model that thinks gets Think in a chat");
         assert!(list[2].efforts.is_empty());

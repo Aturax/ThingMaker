@@ -65,21 +65,14 @@ try {
   }
   assert.ok(lent,"Browse did not lend the selected Chrome tab");
   const attached = await ui({kind:"attachBrowse",key:lent.key});
-  assert.ok(attached.human && attached.chrome==="connected");
-  const agentAction = () => fetch(server.url,{method:"POST",headers:{
-    Authorization:server.headers[0].value,"Content-Type":"application/json",Accept:"application/json, text/event-stream"
-  },body:JSON.stringify({id:1,jsonrpc:"2.0",method:"tools/call",params:{name:"web_act",arguments:{action:"click",role:"button",name:"Open Games"}}})}).then(r=>r.json());
-  assert.match((await agentAction()).result.content[0].text,/user controls/i);
-  console.error("Paired a Chrome tab; the agent is blocked while the human owns it.");
+  assert.ok(attached.chrome==="connected");
   console.log("shared");
   await lines.next();
   await tab.getByRole("button",{name:"Open Books"}).waitFor({timeout:120000});
   console.error("Agent set Books on the lent tab.");
-  assert.ok((await ui({kind:"take"})).human);
   await tab.getByLabel("Category").selectOption("Games");
   await other.bringToFront();
-  assert.match((await agentAction()).result.content[0].text,/user controls/i);
-  await ui({kind:"release"});
+  console.log("edited");
   await tab.getByText("Games opened",{exact:true}).waitFor({timeout:120000});
   assert.equal(await other.getByLabel("Private draft").inputValue(),"untouched");
   assert.ok(await other.evaluate(()=>document.visibilityState==="visible"),"The other tab must remain in front");

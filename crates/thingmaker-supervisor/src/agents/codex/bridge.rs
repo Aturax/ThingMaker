@@ -331,7 +331,9 @@ impl CodexBridge {
             state.thread_id = Some(thread_id.clone());
             state.default_model = result.get("model").and_then(Value::as_str).map(str::to_string);
         }
-        if let Ok(list) = inner.codex.request("model/list", json!({ "limit": 100 }), timeout).await {
+        if inner.launch.local {
+            inner.state().models = vec![json!({"id": model})];
+        } else if let Ok(list) = inner.codex.request("model/list", json!({ "limit": 100 }), timeout).await {
             inner.state().models = list.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
         }
         if resume {

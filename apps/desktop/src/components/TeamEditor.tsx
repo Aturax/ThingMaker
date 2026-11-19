@@ -165,8 +165,8 @@ export function TeamChip({ sessionId, disabled }: { sessionId: string; disabled:
     setOpen(false);
     await saveTeam(sessionId, tidyCombo(preset.combo));
     const lead = preset.orchestrator;
-    if (lead.provider !== provider) {
-      setPendingProvider(sessionId, { provider: lead.provider, ...(lead.model ? { model: lead.model } : {}), ...(lead.effort ? { effort: lead.effort } : {}) });
+    if (lead.provider !== provider || (lead.provider === "local" && lead.model?.startsWith("@agent/"))) {
+      setPendingProvider(sessionId, { provider: lead.provider, ...(lead.resources ? { resources: lead.resources } : {}), ...(lead.model ? { model: lead.model } : {}), ...(lead.effort ? { effort: lead.effort } : {}) });
       return;
     }
     if (pending) setPendingProvider(sessionId, null);

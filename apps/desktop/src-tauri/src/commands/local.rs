@@ -97,7 +97,7 @@ fn private_mode() -> PrivateMode {
 pub async fn local_status(state: State<'_, AppState>) -> CommandResult<LocalStatus> {
     let storage = state.inner_arc();
     let installed = state.resolve_provider(thingmaker_supervisor::agents::Provider::Local).is_ok();
-    let agents_available = state.resolve_provider(thingmaker_supervisor::agents::Provider::Claude).is_ok();
+    let agents_available = [thingmaker_supervisor::agents::Provider::Claude, thingmaker_supervisor::agents::Provider::Codex].into_iter().any(|provider| state.resolve_provider(provider).is_ok());
     tauri::async_runtime::spawn_blocking(move || {
         let ollama = Ollama::local();
         let memory = local::memory_bytes();

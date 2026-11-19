@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-test("one live page survives human takeover and is inspected before the agent acts", { skip: !process.env.THINGMAKER_WEB_MCP_DIR, timeout: 60000 }, async () => {
+test("user and agent interact with the same live page without switching control", { skip: !process.env.THINGMAKER_WEB_MCP_DIR, timeout: 60000 }, async () => {
   const site = createServer((req, res) => {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     if (req.url === "/chart") {
@@ -62,9 +62,8 @@ test("one live page survives human takeover and is inspected before the agent ac
     assert.ok((await call("web_read",{url:url+"/source"})).isError);
     await ui({kind:"enable"});
     assert.match((await call("web_open",{url})).content[0].text,/Category/);
-    let frame = await ui({kind:"take"});
-    assert.ok(frame.image && frame.human);
-    assert.ok((await call("web_act",{action:"select",role:"combobox",name:"Category",value:"Books"})).isError);
+    let frame = await ui({kind:"frame"});
+    assert.ok(frame.image);
     frame = await ui({kind:"key",key:"Tab",revision:frame.revision});
     assert.equal(frame.choices[1].label,"Books");
     await ui({kind:"select",value:"Books",revision:frame.revision});
@@ -89,10 +88,7 @@ test("one live page survives human takeover and is inspected before the agent ac
     const after = await ui({kind:"frame"});
     assert.equal(after.url,frame.url);
     assert.equal(after.revision,frame.revision);
-    assert.ok(after.human);
-    await ui({kind:"release"});
     const action = {action:"click",role:"button",name:"Books"};
-    assert.ok((await call("web_act",action)).isError);
     assert.match((await call("web_page")).content[0].text,/button "Books"/);
     assert.match((await call("web_act",action)).content[0].text,/Books opened/);
     assert.equal(after.storeUrl, "https://chromewebstore.google.com/detail/browse/mfnicocicmmlkpjnaffgihfjhdgjkdjg");

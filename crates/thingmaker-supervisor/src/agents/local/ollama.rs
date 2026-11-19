@@ -30,9 +30,9 @@ pub(crate) fn local_address(value: Option<&str>) -> String {
 pub const ADDRESS_ENV: &str = "THINGMAKER_OLLAMA_ADDRESS";
 
 fn is_this_computer(address: &str) -> bool {
-    let rest = address.strip_prefix("http://").unwrap_or("");
-    let host = rest.split(['/', ':']).next().unwrap_or("");
-    matches!(host, "127.0.0.1" | "localhost")
+    reqwest::Url::parse(address).is_ok_and(|url| url.scheme() == "http"
+        && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
+        && url.username().is_empty() && url.password().is_none())
 }
 
 /// What a derived copy's name carries, so it can be hidden and traced back.

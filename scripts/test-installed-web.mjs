@@ -64,15 +64,12 @@ try {
   assert.equal(after.revision,before.revision);
   assert.match((await call("web_page")).content[0].text,/button "Books"/);
   await call("web_act",{action:"select",role:"combobox",name:"Category",value:"All"});
-  let frame=await ui({kind:"take"});
-  assert.ok(frame.image && frame.human);
+  let frame=await ui({kind:"frame"});
+  assert.ok(frame.image);
   const action={action:"click",role:"button",name:"Books"};
-  assert.ok((await call("web_act",action)).isError);
   frame=await ui({kind:"key",key:"Tab",revision:frame.revision});
   assert.ok(frame.choices.some(c=>c.value==="Books"));
   await ui({kind:"select",value:"Books",revision:frame.revision});
-  await ui({kind:"release"});
-  assert.ok((await call("web_act",action)).isError);
   assert.match((await call("web_page")).content[0].text,/button "Books"/);
   assert.match((await call("web_act",action)).content[0].text,/Books opened/);
   evidence.handoff="Books opened";

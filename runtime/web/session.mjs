@@ -26,8 +26,6 @@ const results = new Map();
 let resultSequence = 0;
 const token = randomUUID();
 let enabled = process.env.THINGMAKER_WEB_ENABLED === "1";
-let human = false;
-let needsInspection = false;
 let browser, launching, context, page;
 
 let revision = 0;
@@ -184,7 +182,6 @@ async function requireLentTab() {
   if (!current) {
     chromeDetached = true;
     chromeTab = undefined;
-    human = needsInspection = true;
     throw Error("Chrome tab disconnected. Lend it again and choose it in ThingMaker.");
   }
   chromeTab = current;
@@ -220,15 +217,15 @@ async function browsePair() {
   return { ...await frame(), pairingCode:code, relayAddress:output.match(/localhost:\d+/)?.[0] || "localhost:19988" };
 }
 async function frame() {
-  if (chromeTab || chromeDetached) return { storeUrl, enabled, human, revision, activity:"", choices:[], image:null,
+  if (chromeTab || chromeDetached) return { storeUrl, enabled, revision, activity:"", choices:[], image:null,
     url:chromeTab?.url || "", chrome:chromeTab ? "connected" : "disconnected" };
   const visible = page && !page.isClosed();
   const image = visible ? (await page.screenshot({ type: "jpeg", quality: 65, timeout: 5000 })).toString("base64") : null;
-  const choices = visible && human ? await page.evaluate(() => {
+  const choices = visible ? await page.evaluate(() => {
     const el = document.activeElement;
     return el instanceof HTMLSelectElement ? Array.from(el.options, opt => ({ label: opt.label, value: opt.value, selected: opt.selected })) : [];
   }) : [];
-  return { storeUrl, enabled, human, activity: "", revision, url: visible ? page.url() : "", image, choices };
+  return { storeUrl, enabled, activity: "", revision, url: visible ? page.url() : "", image, choices };
 }
 function makeServer() {
   const server = new McpServer({ name: "thingmaker-web", version: "1.0.0" });
@@ -236,8 +233,6 @@ function makeServer() {
     server.registerTool(name, { description, inputSchema }, args => schedule(async () => {
       if (!enabled) throw Error("Web is private. The user can enable access in the Web tab.");
       if (schedule === ordered && chromeDetached) throw Error("Chrome tab disconnected. Reconnect in the Web tab.");
-      if (schedule === ordered && human) throw Error("The user controls the browser. Wait for them to return control.");
-      if (schedule === ordered && needsInspection && name !== "web_page") throw Error("The user returned control. Call web_page to read the current page before continuing.");
       const result = await run(args);
       return { content: typeof result === "string" ? [{ type: "text", text: result }] : result };
     }));
@@ -246,7 +241,7 @@ function makeServer() {
     query: z.string().min(1), site: z.string().optional(), lang: z.string().optional(),
     freshness: z.enum(["day","week","month","year"]).optional(), max_results: z.number().int().min(1).max(20).optional(),
   };
-  tool("web_search", "Search independently of the shared tab. Read results with web_read.", searchSchema,
+  tool("web_search", "Search for sources independently of the shared tab. Verify time-sensitive facts with web_read. If results are unrelated, read a known authoritative URL or public data API directly.", searchSchema,
     args => portable ? withResearchPage(source => browserSearch(source, args)) : legacySearch.handleWebSearch(args), research);
   const target = { url: z.string().optional(), result_id: z.string().optional() };
   function urlFor(args) {
@@ -259,7 +254,7 @@ function makeServer() {
     screenshot: z.boolean().optional().describe("Return a viewport image for charts, diagrams or other visual content."),
     scroll_y: z.number().int().nonnegative().optional().describe("Vertical offset in CSS pixels for a screenshot below the fold."),
   };
-  tool("web_read", "Read a JavaScript-rendered source in isolation. Request a screenshot when text is insufficient.", readTarget, async args => {
+  tool("web_read", "Read a source URL or search result in isolation, including public JSON APIs. For a weather forecast, you can read api.open-meteo.com/v1/forecast using latitude, longitude, daily=precipitation_probability_max and the local timezone. Check the returned dates. Request a screenshot when text is insufficient.", readTarget, async args => {
     const url = urlFor(args);
     const legacy = () => legacyRead.handleWebRead({ url, summarize: false, max_tokens: 4000 });
     if (args.scroll_y !== undefined && !args.screenshot) throw Error("scroll_y requires screenshot");
@@ -297,10 +292,7 @@ function makeServer() {
     await open(urlFor(args)); return describe();
   });
   tool("web_page", "Inspect the current shared page, including the user's latest changes.", {}, async () => {
-    const snapshot = chromeTab ? await chromeCommand({kind:"page"}) : await describe();
-    const afterHandoff = needsInspection;
-    needsInspection = false;
-    return afterHandoff ? "Fresh page after human control. Use these current values for the next requested action.\n"+snapshot : snapshot;
+    return chromeTab ? chromeCommand({kind:"page"}) : describe();
   });
   tool("web_act", "Interact with a visible element. For Browse, use the ref in the latest web_page (for example a3). Alternatively supply the exact accessibility role and complete name. For select, use role combobox, its name, and the option label as value.", {
     action: z.enum(["click","fill","select","press"]), ref: z.string().regex(/^(?:f[0-9]+)?[ae][0-9]+$/).optional(), role: z.string().optional(), name: z.string().optional(), value: z.string().optional()
@@ -345,31 +337,21 @@ async function desktop(cmd) {
     if (!tab) throw Error("Lend the tab using the Browse toolbar button first.");
     chromeTab = tab;
     chromeDetached = false;
-    human = needsInspection = true;
     revision++;
     return frame();
   }
   if (cmd.kind === "unshare") {
     chromeTab = undefined;
     chromeDetached = false;
-    human = false;
-    needsInspection = true;
     return frame();
   }
   if (chromeTab || chromeDetached) {
-    if (cmd.kind === "take") human = true;
-    else if (cmd.kind === "release" && human && chromeTab) {
-      await requireLentTab();
-      human = false;
-      needsInspection = true;
-    } else if (cmd.kind !== "frame") throw Error("Select a lent tab in ThingMaker.");
+    if (cmd.kind !== "frame") throw Error("Use Chrome to interact with the shared tab.");
     return frame();
   }
   if (cmd.kind === "enable") enabled = true;
-  else if (cmd.kind === "take" && enabled) human = true;
-  else if (cmd.kind === "release" && human) { human = false; needsInspection = true; }
   else if (cmd.kind !== "frame") {
-    if (!enabled || !human) throw Error("Take control before interacting");
+    if (!enabled) throw Error("Web access is disabled");
     if (cmd.kind === "open") await open(cmd.url);
     else if (cmd.kind === "search") await open(searchUrl(cmd.query));
     else {

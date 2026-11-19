@@ -83,7 +83,7 @@ impl Engine {
         let provider = team.as_ref().and_then(|team| team.0.provider).or_else(|| current.as_ref().map(|live| live.provider)).unwrap_or_default();
         let combo = team.as_ref().map(|team| team.1.clone()).or_else(|| current.as_ref().and_then(|live| self.inner.delegation.as_ref().and_then(|delegation| delegation.combo(&live.handle))));
         let lead = team.map(|team| team.0).unwrap_or_default();
-        let live = self.inner.host.open(OpenSpec { workspace_id: workspace.id.clone(), provider, model: lead.model, effort: lead.effort, combo, resume: None }).await?;
+        let live = self.inner.host.open(OpenSpec { workspace_id: workspace.id.clone(), provider, model: lead.model, effort: lead.effort, resources: lead.resources, combo, resume: None }).await?;
         self.inner.host.emit(EngineEvent::SessionOpened { workspace_id: live.workspace_id.clone(), handle: live.handle.clone(), agent_session_id: live.agent_session_id.clone() });
         let row = self.db(|storage| storage.odyssey_session_row(&workspace.id, &live.agent_session_id, Some(live.provider)))?.ok_or_else(|| DesktopError::not_ready("the run's session has no desktop record"))?;
         self.db(|storage| storage.odyssey_repoint(&goal.id, &row))?;

@@ -19,22 +19,19 @@ const toolsInstall = vi.mocked(api.screenToolsInstall);
 const toolsCancel = vi.mocked(api.screenToolsCancel);
 let onVideo: (event: ScreenStreamEvent) => void;
 const frame = "data:image/jpeg;base64,aGVsbG8=";
-it("enables local web access, takes control and returns the same session to its agent", async () => {
+it("enables local web access, allows direct input in the shared page", async () => {
   const handle = { id: "local-1", attachmentGeneration: "1" };
   let enabled = false;
-  let human = false;
   vi.mocked(api.webControl).mockImplementation(async (_, action) => {
     if (action.kind === "enable") enabled = true;
-    if (action.kind === "take") human = true;
-    if (action.kind === "release") human = false;
-    return { enabled, human, url: "", image: null, revision: 0, activity: "", choices: [] };
+    return { enabled, url: "", image: null, revision: 0, activity: "", choices: [] };
   });
   render(<OfficeScreen webHandle={handle}>Office scene</OfficeScreen>);
-  for (const label of ["Web", "Allow web access for this local session", "Take control", "Return control to agent"]) {
+  for (const label of ["Web", "Allow web access for this local session"]) {
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: label })); });
   }
-  expect(api.webControl).toHaveBeenLastCalledWith(handle, { kind: "release" });
-  expect(screen.getByRole("button", { name: "Take control" })).toBeTruthy();
+  expect(screen.getByRole("textbox", {name:"Search or enter a URL"})).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
 });
 it("shows the pairing code, then reflects Chrome ownership on the next frame", async () => {
   let connected = false;
@@ -42,7 +39,7 @@ it("shows the pairing code, then reflects Chrome ownership on the next frame", a
   vi.mocked(api.webControl).mockImplementation(async (_, action) => {
     if(action.kind === "attachBrowse" && action.key === "catalog") connected = true;
     return {
-    enabled:true, human:true, url:"", image:null, revision:1, activity:"", choices:[],
+    enabled:true, url:"", image:null, revision:1, activity:"", choices:[],
     storeUrl:"https://chromewebstore.google.com/detail/browse/mfnicocicmmlkpjnaffgihfjhdgjkdjg",
     ...(connected ? {chrome:"connected" as const} : {}),
     ...(action.kind === "pair" ? {pairingCode:"ABCD-1234",relayAddress:"localhost:19988"} : {}),
@@ -58,7 +55,7 @@ it("shows the pairing code, then reflects Chrome ownership on the next frame", a
   await act(async () => { fireEvent.click(screen.getByRole("button", {name:"Show lent tabs"})); });
   await act(async () => { fireEvent.click(screen.getByRole("button", {name:/Catalog ·/})); });
   expect(screen.queryByDisplayValue("ABCD-1234")).toBeNull();
-  expect(screen.getByText("You control the Chrome tab")).toBeTruthy();
+  expect(screen.getByText("Chrome tab shared")).toBeTruthy();
 });
 const tools = (overrides: Partial<ScreenTools> = {}): ScreenTools => ({ missing: [], canInstall: false, manager: null, plan: [], manual: null, ...overrides });
 const wingetPlan = ["winget.exe install --id Genymobile.scrcpy --exact --source winget --scope user --silent --accept-package-agreements --accept-source-agreements --disable-interactivity"];

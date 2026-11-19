@@ -41,6 +41,7 @@ pub struct OpenSpec {
     pub provider: Provider,
     pub model: Option<String>,
     pub effort: Option<String>,
+    pub resources: Option<crate::integrations::member_resources::ResourceSelection>,
     /// The team it leads; `None` keeps the user's default.
     pub combo: Option<Combo>,
     /// Resume this agent session instead of starting a new one.

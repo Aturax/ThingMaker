@@ -207,10 +207,17 @@ export function isRetiredModel(provider: Provider, model: { id: string; name: st
 }
 export function parseLocalModel(id: string | undefined): { kind: LocalKind; name: string } {
   if (!id) return { kind: "chat", name: "" };
+  if (id.startsWith("@agent/@codex/")) return { kind: "agent", name: id.slice("@agent/@codex/".length) };
   if (id.startsWith("@agent/")) return { kind: "agent", name: id.slice("@agent/".length) };
   return { kind: "chat", name: id.startsWith("@chat/") ? id.slice("@chat/".length) : id };
 }
-export function localModelId(kind: LocalKind, name: string): string {
+export function localAgentHarness(id?: string): "claude" | "codex" | undefined {
+  if (id?.startsWith("@agent/")) return id.startsWith("@agent/@codex/") ? "codex" : "claude";
+  return undefined;
+}
+
+export function localModelId(kind: LocalKind, name: string, harness: "claude" | "codex" = "claude"): string {
+  if (kind === "agent" && harness === "codex") return `@agent/@codex/${name}`;
   return `@${kind}/${name}`;
 }
 export type LocalFit = "fits" | "tight" | "too_big";
@@ -546,7 +553,7 @@ export type Combo = {
 export const EMPTY_COMBO: Combo = { workers: [], nativeSubagents: false };
 
 /** Who leads a team: a provider, and optionally its model and effort. */
-export type OrchestratorChoice = { provider: Provider; model?: string; effort?: string };
+export type OrchestratorChoice = { resources?: MemberResourceSelection; provider: Provider; model?: string; effort?: string };
 
 /** A saved team: an orchestrator and its workers, ready to start a session with or apply to one. */
 export type TeamPreset = {
@@ -1732,11 +1739,11 @@ export type ScreenDevice = { id: string; name: string; platform: "android" | "io
 export type WebFrame = {
   storeUrl?: string | null; chrome?: "connected" | "disconnected"; pairingCode?: string; relayAddress?: string;
   lentTabs?: {key:string; title:string; url:string}[];
-  enabled: boolean; human: boolean; activity: string; revision: number; url: string; image: string | null;
+  enabled: boolean; activity: string; revision: number; url: string; image: string | null;
   choices: { label: string; value: string; selected: boolean }[];
 };
 export type WebAction =
-  | { kind: "enable" | "take" | "release" | "frame" | "close" | "pair" | "unshare" | "listBrowse" }
+  | { kind: "enable" | "frame" | "close" | "pair" | "unshare" | "listBrowse" }
   | { kind: "attachBrowse"; key:string }
   | { kind: "search"; query: string }
   | { kind: "open"; url: string }
