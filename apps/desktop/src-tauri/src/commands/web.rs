@@ -3,11 +3,13 @@ use crate::state::AppState;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 #[cfg(any(test, windows))]
+#[allow(unused_imports)] // Stdio and line reading are only used by the Windows runtime and its tests.
 use std::{path::PathBuf, process::Stdio};
 use tauri::State;
 use thingmaker_supervisor::{DesktopError, SessionHandle};
 #[cfg(windows)]
 use thingmaker_supervisor::security::EnvironmentProfile;
+#[allow(unused_imports)]
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines}, process::{Child, ChildStdin, ChildStdout, Command}, sync::Mutex};
 
 use thingmaker_supervisor::{
