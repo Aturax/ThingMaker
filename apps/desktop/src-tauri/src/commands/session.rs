@@ -25,7 +25,7 @@ use thingmaker_supervisor::{
     },
     security::EnvironmentProfile,
     storage::{
-        content_hash,
+        Storage, content_hash,
         workspaces::{ArchiveState, SessionOrigin, SessionRecord, TrustState, WorkspaceRecord},
     },
     supervisor::{
@@ -49,7 +49,16 @@ pub enum OpenRequestMode {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ForkSource {
+    workspace_id: String,
+    agent_session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OpenRequest {
+    /// For both native and summary forks, including copies into another worktree.
+    pub fork_source: Option<ForkSource>,
     pub workspace_id: String,
     pub mode: OpenRequestMode,
     /// Which provider to launch. On a resume the session's own record wins:
@@ -80,15 +89,6 @@ pub struct OpenRequest {
 pub(super) struct LocalSessionSetup {
     pub model: String,
     pub resources: Option<ResourceSelection>,
-}
-
-impl LocalSessionSetup {
-    fn restore(saved: Option<Self>, model: Option<String>, resources: Option<ResourceSelection>) -> (Option<String>, Option<ResourceSelection>) {
-        match saved {
-            Some(saved) => (Some(saved.model), saved.resources),
-            None => (model, resources),
-        }
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -147,12 +147,12 @@ fn transcript_exists(state: &AppState, provider: Provider, root: &Path, session_
 /// keeps a session's transcript under its folder, and copies one only from
 /// there, so the source's transcript is put beside this folder's sessions
 /// first. Codex keeps its threads in one place, and needs nothing.
-fn bring_transcript(state: &AppState, provider: Provider, record: &WorkspaceRecord, session_id: &str) -> bool {
+fn bring_transcript(state: &AppState, provider: Provider, record: &WorkspaceRecord, session_id: &str, source: Option<&SessionRecord>) -> bool {
     if provider != Provider::Claude {
         return false;
     }
     let Some(home) = state.home.clone() else { return false };
-    let Ok(Some(source)) = state.with_storage(|storage| storage.session_by_agent_id_anywhere(session_id)) else { return false };
+    let Some(source) = source else { return false };
     let Ok(Some(workspace)) = state.with_storage(|storage| storage.workspace_get(&source.workspace_id)) else { return false };
     let from = thingmaker_supervisor::agents::claude::transcript_usage::transcript_path(&home, Path::new(&workspace.canonical_root), session_id);
     let to = thingmaker_supervisor::agents::claude::transcript_usage::transcript_path(&home, Path::new(&record.canonical_root), session_id);
@@ -336,6 +336,39 @@ pub(crate) fn launch_environment(state: &AppState) -> EnvironmentProfile {
     environment
 }
 
+fn source_record(storage: &Storage, workspace: &str, mode: &OpenRequestMode, source: Option<&ForkSource>) -> CommandResult<Option<SessionRecord>> {
+    if let Some(source) = source {
+        let valid = match mode {
+            OpenRequestMode::New => true,
+            OpenRequestMode::Fork { session_id } => session_id == &source.agent_session_id,
+            OpenRequestMode::Resume { .. } => false,
+        };
+        if !valid { return Err(DesktopError::conflict("Fork source does not match the session being copied")); }
+        let row = storage.session_by_agent_id(&source.workspace_id, &source.agent_session_id).map_err(storage_error)?
+            .ok_or_else(|| DesktopError::not_ready("The source session could not be found"))?;
+        return Ok(Some(row));
+    }
+    match mode {
+        OpenRequestMode::Resume { session_id } => storage.session_by_agent_id(workspace, session_id).map_err(storage_error),
+        OpenRequestMode::Fork { session_id } => match storage.session_by_agent_id(workspace, session_id).map_err(storage_error)? {
+            Some(row) => Ok(Some(row)),
+            None => storage.session_by_agent_id_anywhere(session_id).map_err(storage_error),
+        },
+        OpenRequestMode::New => Ok(None),
+    }
+}
+
+fn restore_setup(storage: &Storage, recorded: Option<&SessionRecord>, model: Option<String>, requested: Option<ResourceSelection>) -> CommandResult<(Option<String>, Option<ResourceSelection>)> {
+    let Some(row) = recorded else { return Ok((model, requested)); };
+    if row.provider == Provider::Local && let Some(saved) = storage.setting_get::<LocalSessionSetup>("localSessionSetup", &row.id).map_err(storage_error)? {
+        return Ok((Some(saved.model), saved.resources));
+    }
+    let selection = storage.session_resources(&row.id).map_err(storage_error)?.unwrap_or_else(|| {
+        requested.or_else(|| matches!(row.provider, Provider::Claude | Provider::Codex).then(ResourceSelection::default))
+    });
+    Ok((model, selection))
+}
+
 #[tauri::command]
 pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> CommandResult<OpenResponse> {
     let record = trusted_workspace(&state, &request.workspace_id)?;
@@ -352,12 +385,7 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
             "This session is already attached in this application. Use the existing attachment instead of starting a second agent process.",
         ));
     }
-    let recorded = match &request.mode {
-        OpenRequestMode::Resume { session_id } | OpenRequestMode::Fork { session_id } => state
-            .with_storage(|storage| storage.session_by_agent_id(&record.id, session_id))
-            .map_err(storage_error)?,
-        OpenRequestMode::New => None,
-    };
+    let recorded = state.with_storage(|s| source_record(s, &record.id, &request.mode, request.fork_source.as_ref()))?;
     let provider = recorded.as_ref().map(|row| row.provider).or(request.provider).unwrap_or_default();
     // A session that never got a prompt has no transcript, so its provider
     // has nothing to resume and would answer "resource not found". Its row
@@ -375,7 +403,7 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
     }
     if let OpenRequestMode::Fork { session_id } = &request.mode
         && !transcript_exists(&state, provider, Path::new(&record.canonical_root), session_id)
-        && !bring_transcript(&state, provider, &record, session_id)
+        && !bring_transcript(&state, provider, &record, session_id, recorded.as_ref())
     {
         return Err(DesktopError::not_ready("This session has no conversation to copy yet. Send it a message first."));
     }
@@ -405,10 +433,7 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
         OpenRequestMode::Resume { session_id } => Some(session_id.clone()),
         OpenRequestMode::New | OpenRequestMode::Fork { .. } => None,
     };
-    let saved = if provider == Provider::Local {
-        recorded.as_ref().map(|row| state.with_storage(|s| s.setting_get::<LocalSessionSetup>("localSessionSetup", &row.id))).transpose().map_err(storage_error)?.flatten()
-    } else { None };
-    let (model, selection) = LocalSessionSetup::restore(saved, model, request.resources.clone());
+    let (model, selection) = state.with_storage(|s| restore_setup(s, recorded.as_ref(), model, request.resources.clone()))?;
     let resolved = super::member_resources::resolve_for(&state, Path::new(&record.canonical_root), provider, model.as_deref(), selection.as_ref())?;
     let opened_model = model.clone();
     let (target, mut launch) = build_launch(&state, &record, provider, model, effort, resume, session_id.clone())?;
@@ -435,11 +460,8 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
     // Every session the user opens leads a team, even an empty one: workers
     // can be added while it runs.
     // A fork starts with its main session's team: it has the same tools.
-    let row_before = match &request.mode {
-        OpenRequestMode::Resume { session_id } | OpenRequestMode::Fork { session_id } => state.with_storage(|s| s.session_by_agent_id(&record.id, session_id)).ok().flatten().map(|row| row.id),
-        OpenRequestMode::New => None,
-    };
-    let combo = super::delegation::starting_combo(&state, request.combo.clone(), row_before.as_deref());
+    let row_before = recorded.as_ref().map(|row| row.id.as_str());
+    let combo = super::delegation::starting_combo(&state, request.combo.clone(), row_before);
     super::delegation::prepare_orchestrator(&state, session_id.as_str(), PathBuf::from(&record.canonical_root), &combo, &mut launch, &mut config);
     if let Some(resources) = resolved {
         config.builtin_web = resources.builtin_web;
@@ -480,7 +502,7 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
         _ => SessionOrigin::Desktop,
     };
     let desktop_session = state
-        .with_storage(|storage| storage.session_upsert(&record.id, &recorded_id, origin, provider))
+        .with_storage(|storage| storage.session_upsert_with_resources(&record.id, &recorded_id, origin, provider, selection.as_ref()))
         .map_err(storage_error)?;
     let local_setup = opened_model.as_ref().filter(|_| provider == Provider::Local)
         .map(|model| LocalSessionSetup { model: model.clone(), resources: selection });
@@ -490,9 +512,9 @@ pub async fn session_open(request: OpenRequest, state: State<'_, AppState>) -> C
     // A fork is listed under the session it was copied from.
     if request.side_of.is_none()
         && matches!(request.mode, OpenRequestMode::Fork { .. })
-        && let Some(source) = &row_before
+        && let Some(source) = recorded.as_ref().filter(|source| source.workspace_id == record.id)
     {
-        let _ = state.with_storage(|storage| storage.session_set_parent(&desktop_session.id, Some(source)));
+        let _ = state.with_storage(|storage| storage.session_set_parent(&desktop_session.id, Some(&source.id)));
     }
     // A side session hangs off its main session's row, which is how the
     // interface finds it again, and acts on that session's goal.
@@ -1262,15 +1284,63 @@ mod recovery_tests {
     }
 
     #[test]
-    fn resume_restores_the_saved_local_harness_and_selected_resources() {
-        let db = thingmaker_supervisor::storage::Storage::open_in_memory().unwrap();
+    fn resume_and_forks_restore_the_saved_local_harness_and_resources_from_the_source() {
+        let db = Storage::open_in_memory().unwrap();
+        let source = db.workspace_upsert("source", "source", "source").unwrap();
+        let dest = db.workspace_upsert("destination", "destination", "destination").unwrap();
+        let row = db.session_upsert(&source.id, "thread", SessionOrigin::Desktop, Provider::Local).unwrap();
         let selection = ResourceSelection { skills: vec!["skill:user:art".into()], mcps: vec![] };
         let setup = LocalSessionSetup { model: "@agent/@codex/gemma".into(), resources: Some(selection.clone()) };
-        db.setting_set("localSessionSetup", "row", &setup).unwrap();
-        let saved = db.setting_get("localSessionSetup", "row").unwrap();
-        let current = Some("@agent/default".into());
-        assert_eq!(LocalSessionSetup::restore(saved,current.clone(),None), (Some(setup.model),Some(selection)));
-        assert_eq!(LocalSessionSetup::restore(None,current.clone(),None), (current,None));
+        db.setting_set("localSessionSetup", &row.id, &setup).unwrap();
+        db.session_upsert(&dest.id, "thread", SessionOrigin::Desktop, Provider::Local).unwrap();
+        let origin = ForkSource {workspace_id: source.id.clone(), agent_session_id: "thread".into()};
+        for (workspace, mode, reference) in [
+            (&source.id, OpenRequestMode::Resume {session_id: "thread".into()}, None),
+            (&dest.id, OpenRequestMode::Fork {session_id: "thread".into()}, Some(&origin)),
+            (&dest.id, OpenRequestMode::New, Some(&origin)),
+        ] {
+            let row = source_record(&db, workspace, &mode, reference).unwrap().unwrap();
+            let actual = restore_setup(&db, Some(&row), Some("ollama-served-gemma".into()), None).unwrap();
+            assert_eq!(actual, (Some(setup.model.clone()), Some(selection.clone())));
+        }
+    }
+
+    #[test]
+    fn cloud_policies_survive_reopen_and_native_or_summary_forks_into_another_workspace() {
+        use thingmaker_supervisor::integrations::member_resources::ResourceSelection;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        let db = Storage::open(&path).unwrap();
+        let source = db.workspace_upsert("source", "source", "a").unwrap().id;
+        let dest = db.workspace_upsert("dest", "dest", "b").unwrap().id;
+        let selected = ResourceSelection { skills: vec!["skill:exact".into()], mcps: vec![] };
+        let empty = ResourceSelection::default();
+        for (id, provider, policy) in [("lead", Provider::Claude, &empty), ("worker", Provider::Codex, &selected)] {
+            db.session_upsert_with_resources(&source, id, SessionOrigin::Desktop, provider, Some(policy)).unwrap();
+            // Identical transcript IDs in another workspace must not select that workspace's policy.
+            db.session_upsert(&dest, id, SessionOrigin::Desktop, provider).unwrap();
+        }
+        drop(db);
+        let db = Storage::open(&path).unwrap();
+        for (id, expected) in [("lead", empty), ("worker", selected)] {
+            let origin = ForkSource { workspace_id: source.clone(), agent_session_id: id.into() };
+            for (workspace, mode, reference) in [
+                (&source, OpenRequestMode::Resume { session_id: id.into() }, None),
+                (&dest, OpenRequestMode::Fork { session_id: id.into() }, Some(&origin)),
+                (&dest, OpenRequestMode::New, Some(&origin)),
+            ] {
+                let row = source_record(&db, workspace, &mode, reference).unwrap().unwrap();
+                let (model, policy) = restore_setup(&db, Some(&row), Some("requested model".into()), Some(ResourceSelection::default())).unwrap();
+                assert_eq!(model.as_deref(), Some("requested model"));
+                assert_eq!(policy.as_ref(), Some(&expected));
+            }
+            let old = db.session_by_agent_id(&dest, id).unwrap().unwrap();
+            assert_eq!(restore_setup(&db, Some(&old), None, None).unwrap().1, Some(ResourceSelection::default()));
+            // Legacy Big Thing resumes can provide their saved team policy.
+            assert_eq!(restore_setup(&db, Some(&old), None, Some(expected.clone())).unwrap().1, Some(expected.clone()));
+            let inherited = db.session_upsert_with_resources(&dest, id, SessionOrigin::Desktop, old.provider, None).unwrap();
+            assert_eq!(restore_setup(&db, Some(&inherited), None, Some(expected)).unwrap().1, None);
+        }
     }
 
     #[test]

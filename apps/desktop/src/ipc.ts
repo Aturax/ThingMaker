@@ -162,6 +162,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 }
 
 export type OpenRequest = {
+  forkSource?: { workspaceId: string; agentSessionId: string };
   resources?: MemberResourceSelection;
   workspaceId: string;
   mode: { mode: "new" } | { mode: "resume"; session_id: string } | { mode: "fork"; session_id: string };

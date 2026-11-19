@@ -326,7 +326,10 @@ impl Engine {
             reopened.insert(goal.id.clone(), now);
         }
         let row = self.db(|storage| storage.session_get(row_id)).ok().flatten()?;
-        let spec = OpenSpec { workspace_id: goal.workspace_id.clone(), provider: row.provider, combo: team_of(goal).map(|team| team.1), resume: Some(row.agent_session_id.clone()), ..OpenSpec::default() };
+        let (resources, combo) = team_of(goal).map(|(lead, combo)| {
+            (lead.resources.filter(|_| lead.provider == Some(row.provider)), Some(combo))
+        }).unwrap_or_default();
+        let spec = OpenSpec { workspace_id: goal.workspace_id.clone(), provider: row.provider, resources, combo, resume: Some(row.agent_session_id.clone()), ..OpenSpec::default() };
         match self.inner.host.open(spec).await {
             Ok(live) => {
                 self.journal(&goal.id, JournalKind::State, None, "Reopened the run's session", Some(&format!("The session {} was not open, so Big Thing resumed it to carry on.", live.agent_session_id)));

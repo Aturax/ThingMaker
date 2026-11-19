@@ -2728,7 +2728,8 @@ export const useStore = create<State>((set, get) => ({
     // The copy works the way the original does: its model, effort and team.
     const options = live ? asConfigOptions(live.snapshot.configOptions) : [];
     const chosen = (option: { currentValue?: unknown } | undefined) => (typeof option?.currentValue === "string" && option.currentValue !== "default" ? option.currentValue : undefined);
-    const model = chosen(options.find((option) => option.configId === "model"));
+    const localSetup = provider === "local" ? live?.localSetup : undefined;
+    const model = localSetup?.model ?? chosen(options.find((option) => option.configId === "model"));
     const effort = chosen(options.find((option) => isEffortOption(option.configId)));
     const team = live ? get().teams[live.handle.id] : undefined;
     const cards = live?.projection.cards;
@@ -2748,7 +2749,7 @@ export const useStore = create<State>((set, get) => ({
         set({ workspaces: await api.workspaceList(), inspections: { ...get().inspections, [inspection.record.id]: inspection } });
         target = inspection.record.id;
       }
-      const launch = { workspaceId: target, provider, ...(model ? { model } : {}), ...(effort ? { reasoningEffort: effort } : {}), ...(team ? { combo: team } : {}), ...(side && live ? { sideOf: live.handle.id } : {}) };
+      const launch = { workspaceId: target, forkSource: { workspaceId, agentSessionId }, provider, ...(localSetup?.resources ? { resources: localSetup.resources } : {}), ...(model ? { model } : {}), ...(effort ? { reasoningEffort: effort } : {}), ...(team ? { combo: team } : {}), ...(side && live ? { sideOf: live.handle.id } : {}) };
       const opened = copies
         ? await api.sessionOpen({ ...launch, mode: { mode: "fork", session_id: agentSessionId }, ...(provider === "claude" && point?.at ? { forkAt: point.at } : {}) })
         : await api.sessionOpen({ ...launch, mode: { mode: "new" } });
