@@ -25,6 +25,32 @@ let enabled = process.env.THINGMAKER_WEB_ENABLED === "1";
 let browser, launching, context, page;
 
 let revision = 0;
+let lastDocumentState;
+// Count changes in every document, including same-URL dialogs, new controls,
+// focus moves and scrolls that change what a screenshot click would hit.
+function trackDocument() {
+  let changed = 0;
+  const bump = () => { changed++; };
+  new MutationObserver(bump).observe(document, {subtree:true, childList:true, attributes:true, characterData:true});
+  for (const type of ["focusin", "focusout", "scroll", "resize"]) {
+    window.addEventListener(type, bump, true);
+  }
+  Object.defineProperty(window, "__thingmakerFrameRevision", { get: () => changed });
+}
+
+async function currentRevision() {
+  const current = page;
+  if (current && !current.isClosed()) {
+    const state = JSON.stringify(await Promise.all(current.frames().map(frame =>
+      frame.evaluate(() => window.__thingmakerFrameRevision))));
+    if (state !== lastDocumentState) {
+      lastDocumentState = state;
+      revision++;
+    }
+  }
+  return revision;
+}
+
 function serialQueue() {
   let previous = Promise.resolve();
   return work => {
@@ -63,10 +89,11 @@ async function open(target) {
   const url = httpUrl(target);
   if (!context || !context.browser()?.isConnected()) {
     context = await newContext();
+    await context.addInitScript(trackDocument);
     context.on("page", next => {
       page = next;
       revision++;
-      next.on("framenavigated", frame => { if (frame === next.mainFrame()) revision++; });
+      next.on("framenavigated", () => { if (page === next) revision++; });
       next.on("close", () => { if (page === next) page = context.pages().at(-1); revision++; });
     });
   }
@@ -232,12 +259,14 @@ async function frame() {
   if (chromeTab || chromeDetached) return { storeUrl, enabled, revision, activity:"", choices:[], image:null,
     url:chromeTab?.url || "", chrome:chromeTab ? "connected" : "disconnected" };
   const visible = page && !page.isClosed();
-  const image = visible ? (await page.screenshot({ type: "jpeg", quality: 65, timeout: 5000 })).toString("base64") : null;
+  // Stamp before sampling: a change during capture must invalidate this frame.
+  const capturedRevision = await currentRevision();
+  const image = visible ? (await page.screenshot({ type: "jpeg", quality: 65, caret: "initial", timeout: 5000 })).toString("base64") : null;
   const choices = visible ? await page.evaluate(() => {
     const el = document.activeElement;
     return el instanceof HTMLSelectElement ? Array.from(el.options, opt => ({ label: opt.label, value: opt.value, selected: opt.selected })) : [];
   }) : [];
-  return { storeUrl, enabled, activity: "", revision, url: visible ? page.url() : "", image, choices };
+  return { storeUrl, enabled, activity: "", revision: capturedRevision, url: visible ? page.url() : "", image, choices };
 }
 function makeServer() {
   const server = new McpServer({ name: "thingmaker-web", version: "1.0.0" });
@@ -308,6 +337,9 @@ function makeServer() {
     if (!(chromeTab && ref) && (!role || name === undefined)) throw Error("Supply the exact role and name from web_page.");
     if (chromeTab) return chromeCommand({kind:"act", action, ref, role, name, value});
     if (!page) throw Error("Open a page first");
+    // The agent can change a form property without a DOM mutation. Invalidate
+    // before dispatch so even a partially applied action invalidates stale input.
+    revision++;
     const element = page.getByRole(role, { name, exact: true });
     if (action === "click") await element.click();
     else if (action === "fill") await element.fill(value);
@@ -380,7 +412,7 @@ async function desktop(cmd) {
     if (cmd.kind === "open") await open(cmd.url);
     else if (cmd.kind === "search") await open(searchUrl(cmd.query));
     else {
-      if (!page || cmd.revision !== revision) throw Error("Page changed. Try again on the current frame.");
+      if (!page || cmd.revision !== await currentRevision()) throw Error("Page changed. Try again on the current frame.");
       if (cmd.kind === "click") await page.mouse.click(cmd.x, cmd.y);
       else if (cmd.kind === "scroll") { await page.mouse.move(cmd.x, cmd.y); await page.mouse.wheel(0,cmd.dy); }
       else if (cmd.kind === "key") await page.keyboard.press(cmd.key);

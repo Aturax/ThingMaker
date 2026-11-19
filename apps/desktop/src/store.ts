@@ -2722,7 +2722,7 @@ export const useStore = create<State>((set, get) => ({
         set({ workspaces: await api.workspaceList(), inspections: { ...get().inspections, [inspection.record.id]: inspection } });
         target = inspection.record.id;
       }
-      const launch = { workspaceId: target, provider, ...(model ? { model } : {}), ...(effort ? { reasoningEffort: effort } : {}), ...(team ? { combo: team } : {}), ...(side && live ? { sideOf: live.handle.id } : {}) };
+      const launch = { workspaceId: target, forkSource: { workspaceId, agentSessionId }, provider, ...(model ? { model } : {}), ...(effort ? { reasoningEffort: effort } : {}), ...(team ? { combo: team } : {}), ...(side && live ? { sideOf: live.handle.id } : {}) };
       const opened = copies
         ? await api.sessionOpen({ ...launch, mode: { mode: "fork", session_id: agentSessionId }, ...(provider === "claude" && point?.at ? { forkAt: point.at } : {}) })
         : await api.sessionOpen({ ...launch, mode: { mode: "new" } });

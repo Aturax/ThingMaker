@@ -4,7 +4,9 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use super::{Storage, StorageError, new_id, now_unix_ms};
-use crate::agents::Provider;
+use crate::{agents::Provider, integrations::member_resources::ResourceSelection};
+
+const RESOURCE_SELECTION: &str = "sessionResourceSelection";
 
 pub const LOCAL_ENVIRONMENT_ID: &str = "local";
 
@@ -254,6 +256,7 @@ impl Storage {
             conn.execute("DELETE FROM artifacts WHERE workspace_id = ?1", params![id])?;
             conn.execute("DELETE FROM worktrees WHERE workspace_id = ?1", params![id])?;
             conn.execute("DELETE FROM ultra_reviews WHERE workspace_id = ?1", params![id])?;
+            conn.execute("DELETE FROM settings WHERE key = ?1 AND scope IN (SELECT id FROM sessions WHERE workspace_id = ?2)", params![RESOURCE_SELECTION, id])?;
             conn.execute("DELETE FROM sessions WHERE workspace_id = ?1", params![id])?;
             let removed = conn.execute("DELETE FROM workspaces WHERE id = ?1", params![id])?;
             if removed == 0 {
@@ -409,6 +412,24 @@ impl Storage {
         })
     }
 
+    /// Record the exact policy alongside the row. A failed write must not leave a
+    /// restricted session discoverable as a session with inherited resources.
+    pub fn session_upsert_with_resources(
+        &self, workspace_id: &str, agent_id: &str, origin: SessionOrigin, provider: Provider,
+        resources: Option<&ResourceSelection>,
+    ) -> Result<SessionRecord, StorageError> {
+        let transaction = self.conn().unchecked_transaction()?;
+        let record = self.session_upsert(workspace_id, agent_id, origin, provider)?;
+        // A stored null is an inherited launch policy. A missing key is an older row.
+        self.setting_set(RESOURCE_SELECTION, &record.id, &resources)?;
+        transaction.commit()?;
+        Ok(record)
+    }
+
+    pub fn session_resources(&self, id: &str) -> Result<Option<Option<ResourceSelection>>, StorageError> {
+        self.setting_get(RESOURCE_SELECTION, id)
+    }
+
     /// Marks a session as a worker of `parent` (both desktop row ids).
     /// Marks a row as a fork, for a copy that was made without `session/fork`
     /// (a provider that cannot fork starts one with a brief instead).
@@ -481,6 +502,7 @@ impl Storage {
             transaction.execute("DELETE FROM projection_generations WHERE session_id = ?1", params![id])?;
             transaction.execute("DELETE FROM review_baselines WHERE session_id = ?1", params![id])?;
             transaction.execute("DELETE FROM artifacts WHERE workspace_id = ?1 AND agent_session_id = ?2", params![workspace_id, agent_id])?;
+            transaction.execute("DELETE FROM settings WHERE key = ?1 AND scope = ?2", params![RESOURCE_SELECTION, id])?;
             transaction.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
         }
         transaction.commit()?;

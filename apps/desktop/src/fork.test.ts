@@ -109,7 +109,7 @@ describe("forking a session", () => {
   it("copies it on the same model, effort and team, nested under it and named after it", async () => {
     const key = await useStore.getState().forkSession({ workspaceId: "w1", agentSessionId: "agent-main", provider: "claude", key: "main" });
     expect(key).toBe("fork");
-    expect(api.sessionOpen).toHaveBeenCalledWith({ workspaceId: "w1", provider: "claude", model: "opus", reasoningEffort: "high", combo: team, mode: { mode: "fork", session_id: "agent-main" } });
+    expect(api.sessionOpen).toHaveBeenCalledWith({ workspaceId: "w1", forkSource: { workspaceId: "w1", agentSessionId: "agent-main" }, provider: "claude", model: "opus", reasoningEffort: "high", combo: team, mode: { mode: "fork", session_id: "agent-main" } });
     expect(api.sessionNest).toHaveBeenCalledWith("w1", "agent-fork", "agent-main");
     expect(renameSession).toHaveBeenCalledWith("w1", "agent-fork", "Login work (fork)");
     expect(useStore.getState().view).toEqual(expect.objectContaining({ kind: "session", sessionId: "fork" }));
@@ -124,7 +124,7 @@ describe("forking a session", () => {
   it("on a provider that cannot copy, starts a new session that is briefed on the conversation up to the point", async () => {
     useStore.setState({ sessions: { main: live("main", "gemini") } });
     await useStore.getState().forkSession({ workspaceId: "w1", agentSessionId: "agent-main", provider: "gemini", key: "main" }, forkPointAt(cards, 1) ?? undefined);
-    expect(api.sessionOpen).toHaveBeenCalledWith(expect.objectContaining({ provider: "gemini", mode: { mode: "new" } }));
+    expect(api.sessionOpen).toHaveBeenCalledWith(expect.objectContaining({ provider: "gemini", forkSource: { workspaceId: "w1", agentSessionId: "agent-main" }, mode: { mode: "new" } }));
     const brief = useStore.getState().sideBrief.fork as string;
     expect(brief).toContain("Fix the login bug");
     expect(brief).not.toContain("Now add a test");
@@ -138,7 +138,7 @@ describe("forking a session", () => {
     vi.mocked(api.workspaceList).mockResolvedValue([] as never);
     await useStore.getState().forkSession({ workspaceId: "w1", agentSessionId: "agent-main", provider: "claude", key: "main" }, undefined, { worktree: true });
     expect(vi.mocked(api.worktreeCreate).mock.calls[0]).toEqual(["w1", expect.stringMatching(/^fork\/login-work-[0-9a-f]{1,4}$/), "HEAD", true]);
-    expect(api.sessionOpen).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: "w2", mode: { mode: "fork", session_id: "agent-main" } }));
+    expect(api.sessionOpen).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: "w2", forkSource: { workspaceId: "w1", agentSessionId: "agent-main" }, mode: { mode: "fork", session_id: "agent-main" } }));
     expect(api.sessionNest).not.toHaveBeenCalled();
     expect(renameSession).toHaveBeenCalledWith("w2", "agent-fork", "Login work (fork)");
   });

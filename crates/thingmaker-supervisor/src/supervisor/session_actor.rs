@@ -453,6 +453,7 @@ impl SessionActor {
             tool_calls: BTreeMap::new(),
             detached: BTreeMap::new(),
             background: BTreeMap::new(),
+            background_watches: BTreeMap::new(),
             config_options: Value::Array(Vec::new()),
             available_commands: Vec::new(),
             pending_steers: BTreeSet::new(),
@@ -659,6 +660,7 @@ struct ActorState {
     detached: BTreeMap<String, DetachedCallState>,
     /// Background commands by task id.
     background: BTreeMap<String, BackgroundTask>,
+    background_watches: BTreeMap<String, tokio::task::AbortHandle>,
     config_options: Value,
     available_commands: Vec<AvailableCommand>,
     pending_steers: BTreeSet<String>,
@@ -996,11 +998,12 @@ impl ActorState {
                 if found {
                     task.output_path = path.clone();
                 }
+                let watch = found && !task.native_lifecycle && task.state == BackgroundTaskState::Running;
                 if *task != before {
                     let task = task.clone();
                     self.emit(SessionEvent::BackgroundTask(task));
                 }
-                found
+                watch
             }
             None => {
                 // A replayed task started when its file was made, not now.
@@ -1032,11 +1035,12 @@ impl ActorState {
     /// Checks a background command's output file once a second — its size,
     /// and its last line when the size changed — until that line says how
     /// it ended, or the actor is gone.
-    fn watch_background(&self, task_id: String, path: String) {
+    fn watch_background(&mut self, task_id: String, path: String) {
         let path = std::path::PathBuf::from(path);
         if !background::possible_task_output(&path) { return; }
         let internal = self.internal.clone();
-        tokio::spawn(async move {
+        let id = task_id.clone();
+        let watcher = tokio::spawn(async move {
             let mut seen: Option<u64> = None;
             let mut missing = 0u32;
             while !internal.is_closed() {
@@ -1065,9 +1069,10 @@ impl ActorState {
                         }
                     }
                     Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                        missing += 1;
+                        // A provider may create this file long after reporting its path.
+                        // Only its disappearance after a successful read is evidence of a stop.
+                        if seen.is_some() { missing += 1; }
                         if missing >= 10 {
-                            if seen.is_none() { return; }
                             let ending = "[its output file is gone]".to_string();
                             let _ = internal.send(Internal::BackgroundEnded { task_id, state: BackgroundTaskState::Stopped, exit_code: None, ending, ended_at_unix_ms: now_unix_ms() as i64 }).await;
                             return;
@@ -1078,10 +1083,12 @@ impl ActorState {
                 time::sleep(Duration::from_secs(1)).await;
             }
         });
+        self.background_watches.insert(id, watcher.abort_handle());
     }
 
     /// Commands still running when the session ends end with it.
     fn end_background(&mut self, ending: &str) {
+        for watch in std::mem::take(&mut self.background_watches).into_values() { watch.abort(); }
         let now = now_unix_ms() as i64;
         let running: Vec<String> = self.background.values().filter(|task| task.state == BackgroundTaskState::Running).map(|task| task.task_id.clone()).collect();
         for id in running {
@@ -1114,6 +1121,7 @@ impl ActorState {
             && matches!(unknown.original_kind.as_str(), "async_task_spawned" | "async_task_progress" | "async_task_state_update")
         {
             if let Some(mut task) = background::native_update(&unknown.raw, &self.background, now_unix_ms() as i64) {
+                if let Some(watch) = self.background_watches.remove(&task.task_id) { watch.abort(); }
                 if let Some(input) = self.tool_calls.get(&task.tool_call_id).and_then(|patch| patch.raw_input.as_ref()) {
                     task.command = task.command.or_else(|| input.get("command").and_then(Value::as_str).map(str::to_string));
                 }
@@ -2163,6 +2171,7 @@ impl ActorState {
             Internal::StopBackgroundResult { task_id, result, reply } => {
                 let outcome = match result {
                     Ok(value) if value.get("stopped").and_then(Value::as_bool) == Some(true) => {
+                        if let Some(watch) = self.background_watches.remove(&task_id) { watch.abort(); }
                         if let Some(task) = self.background.get_mut(&task_id)
                             && task.state == BackgroundTaskState::Running
                         {
@@ -2181,6 +2190,7 @@ impl ActorState {
                 let _ = reply.send(outcome);
             }
             Internal::BackgroundEnded { task_id, state, exit_code, ending, ended_at_unix_ms } => {
+                self.background_watches.remove(&task_id);
                 if let Some(task) = self.background.get_mut(&task_id)
                     && !task.native_lifecycle
                     && task.state == BackgroundTaskState::Running
