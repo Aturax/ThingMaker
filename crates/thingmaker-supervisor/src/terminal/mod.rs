@@ -69,7 +69,7 @@ pub struct Terminal {
     exited: AtomicBool,
     exit_code: Mutex<Option<u32>>,
     private: bool,
-    private_subscribed: AtomicBool,
+    private_input_started: AtomicBool,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -113,13 +113,7 @@ impl Terminal {
 
     /// Bounded scrollback for rehydration, oldest bytes first.
     pub fn scrollback(&self) -> Vec<u8> {
-        let mut scrollback = lock(&self.scrollback);
-        if self.private {
-            self.private_subscribed.store(true, Ordering::SeqCst);
-            scrollback.drain(..).collect()
-        } else {
-            scrollback.iter().copied().collect()
-        }
+        lock(&self.scrollback).iter().copied().collect()
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<(), DesktopError> {
@@ -128,6 +122,10 @@ impl Terminal {
         }
         if self.exited.load(Ordering::SeqCst) {
             return Err(DesktopError::not_ready("terminal process has exited"));
+        }
+        if self.private {
+            // Keep the prompt for reconnects; stop recording before anything a user types can be echoed.
+            self.private_input_started.store(true, Ordering::SeqCst);
         }
         let mut writer = lock(&self.writer);
         writer.write_all(bytes).and_then(|_| writer.flush()).map_err(|e| DesktopError::io(e.to_string()))
@@ -152,7 +150,11 @@ impl Terminal {
             // ConPTY can still be waiting for its initial cursor reply when
             // the renderer disappears. Unblock that handshake before killing
             // the process, otherwise ClosePseudoConsole can wait indefinitely.
-            let mut writer = lock(&self.writer);
+            if self.private {
+            // Keep the prompt for reconnects; stop recording before anything a user types can be echoed.
+            self.private_input_started.store(true, Ordering::SeqCst);
+        }
+        let mut writer = lock(&self.writer);
             let _ = writer.write_all(b"\x1b[1;1R");
             let _ = writer.flush();
         }
@@ -230,7 +232,7 @@ impl TerminalManager {
             exited: AtomicBool::new(false),
             exit_code: Mutex::new(None),
             private,
-            private_subscribed: AtomicBool::new(false),
+            private_input_started: AtomicBool::new(false),
         });
         // Reader thread: PTY -> scrollback + subscribers.
         let reader_terminal = Arc::clone(&terminal);
@@ -245,7 +247,7 @@ impl TerminalManager {
                             let bytes = &buffer[..read];
                             {
                                 let mut scrollback = lock(&reader_terminal.scrollback);
-                                if !reader_terminal.private || !reader_terminal.private_subscribed.load(Ordering::SeqCst) {
+                                if !reader_terminal.private || !reader_terminal.private_input_started.load(Ordering::SeqCst) {
                                     scrollback.extend(bytes.iter().copied());
                                 }
                                 while scrollback.len() > SCROLLBACK_BYTES {
@@ -316,7 +318,7 @@ impl TerminalManager {
         }
         if terminal.private {
             let mut scrollback = lock(&terminal.scrollback);
-            terminal.private_subscribed.store(true, Ordering::SeqCst);
+            terminal.private_input_started.store(true, Ordering::SeqCst);
             scrollback.clear();
         }
         Ok(())
@@ -387,11 +389,15 @@ mod tests {
         let terminal = manager.open_private(spec).unwrap();
         assert!(manager.list().is_empty());
         assert!(manager.export(&terminal.id).is_err());
-        terminal.scrollback(); // Initial replay consumes private scrollback.
+        lock(&terminal.scrollback).extend(b"Sign in at https://example.test/login");
+        for _ in 0..2 {
+            assert!(String::from_utf8_lossy(&terminal.scrollback()).contains("https://example.test/login"));
+        }
         let mut events = terminal.subscribe();
         terminal.write(if cfg!(windows) { b"echo one-time-code\r\n" } else { b"one-time-code\n" }).unwrap();
         tokio::time::timeout(Duration::from_secs(10), events.recv()).await.unwrap().unwrap();
-        assert!(terminal.scrollback().is_empty(), "live authentication output is not retained");
+        assert!(!String::from_utf8_lossy(&terminal.scrollback()).contains("one-time-code"));
+        assert!(String::from_utf8_lossy(&terminal.scrollback()).contains("https://example.test/login"));
         manager.close_private();
         assert!(manager.get(&terminal.id).is_none());
         tokio::time::timeout(Duration::from_secs(10), async {

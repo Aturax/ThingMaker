@@ -446,7 +446,7 @@ export const api = {
   accountsList: (provider: Provider) => call<AccountView[]>(COMMANDS.accountsList, { provider }),
   accountAdd: (provider: Provider, label: string) => call<AccountView>(COMMANDS.accountAdd, { provider, label }),
   accountRename: (provider: Provider, id: string, label: string) => call<void>(COMMANDS.accountRename, { provider, id, label }),
-  accountRemove: (provider: Provider, id: string) => call<void>(COMMANDS.accountRemove, { provider, id }),
+  accountRemove: (provider: Provider, id: string, localOnly = false) => call<string | null>(COMMANDS.accountRemove, { provider, id, localOnly }),
   accountSetActive: (provider: Provider, id: string) => call<void>(COMMANDS.accountSetActive, { provider, id }),
   delegationComboGet: (handle: SessionHandle) => call<Combo | null>(COMMANDS.delegationComboGet, { handle }),
   delegationComboSet: (handle: SessionHandle, combo: Combo) => call<Combo>(COMMANDS.delegationComboSet, { request: { handle, combo } }),

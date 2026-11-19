@@ -48,6 +48,17 @@ pub fn account_environment(folder: Option<&Path>) -> Vec<(String, String)> {
     let mut env = vec![(DISABLE_AUTO_UPDATE.into(), "1".into())];
     if let Some(folder) = folder {
         let path = folder.to_string_lossy().into_owned();
+        if let Some(home) = std::env::home_dir() {
+            let mut git = home.join(".gitconfig");
+            if !git.is_file() {
+                let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config")).join("git/config");
+                if config.is_file() { git = config; }
+            }
+            for (key, default) in [("RUSTUP_HOME", home.join(".rustup")), ("CARGO_HOME", home.join(".cargo")), ("GIT_CONFIG_GLOBAL", git)] {
+                let path = std::env::var_os(key).map(PathBuf::from).unwrap_or(default);
+                env.push((key.into(), path.to_string_lossy().into_owned()));
+            }
+        }
         env.extend([
             ("HOME".into(), path.clone()), ("USERPROFILE".into(), path),
             ("APPDATA".into(), folder.join("AppData/Roaming").to_string_lossy().into_owned()),
@@ -299,6 +310,10 @@ mod tests {
         assert_eq!(extra["USERPROFILE"], "/accounts/work");
         assert_eq!(PathBuf::from(&extra["APPDATA"]), Path::new("/accounts/work").join("AppData/Roaming"));
         assert_eq!(PathBuf::from(&extra["LOCALAPPDATA"]), Path::new("/accounts/work").join("AppData/Local"));
+        for name in ["RUSTUP_HOME", "CARGO_HOME", "GIT_CONFIG_GLOBAL"] {
+            assert!(extra.contains_key(name));
+            assert!(!Path::new(&extra[name]).starts_with("/accounts/work"));
+        }
         for name in ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] {
             assert!(!extra.contains_key(name), "account isolation must not impersonate an SSH session");
         }

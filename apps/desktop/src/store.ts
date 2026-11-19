@@ -3296,7 +3296,18 @@ export const useStore = create<State>((set, get) => ({
 
   async removeAccount(provider, id) {
     try {
-      await api.accountRemove(provider, id);
+      const signOutProblem = await api.accountRemove(provider, id);
+      if (signOutProblem) {
+        const confirmed = await api.confirmDialog({
+          title: t("Remove from this computer anyway?"),
+          message: t("Antigravity could not sign out. {reason} Removing the local profile leaves Google access unrevoked.", { reason: signOutProblem }),
+          okLabel: t("Remove locally"),
+          cancelLabel: t("Keep it"),
+          warning: true,
+        });
+        if (!confirmed) return;
+        await api.accountRemove(provider, id, true);
+      }
       await Promise.all([get().loadAccounts(provider), get().loadProviders()]);
       void get().refreshUsage(provider);
     } catch (error) {

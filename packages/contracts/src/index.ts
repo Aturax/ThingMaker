@@ -187,7 +187,7 @@ export const ORCHESTRATOR_PROVIDERS: readonly Provider[] = ["claude", "codex", "
  * person's own folder; an added one has a folder of its own that shares
  * everything but the sign-in. The active one is used by new sessions.
  */
-export type AccountView = { id: string; provider: Provider; label: string; isDefault: boolean; active: boolean; auth?: ProviderAuthStatus };
+export type AccountView = { id: string; provider: Provider; label: string; isDefault: boolean; active: boolean; conflicts?: string[]; auth?: ProviderAuthStatus };
 export const ACCOUNT_PROVIDERS: readonly Provider[] = ["claude", "codex", "gemini"] as const;
 
 export type LocalKind = "chat" | "agent";

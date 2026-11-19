@@ -73,6 +73,15 @@ describe("Gemini accounts", () => {
   const terminal: TerminalInfo = { id: "auth-t1", cwd: "/scratch", program: "agy", pid: 12, cols: 100, rows: 28, exited: false, exitCode: null };
   const work: AccountView = { ...personal, provider: "gemini", auth: { provider: "gemini", loggedIn: true } };
 
+  it.each([true, false])("requires confirmation before removing a local profile after logout failure (%s)", async (confirmed) => {
+    vi.mocked(api.accountRemove).mockResolvedValueOnce("Unsupported CLI version").mockResolvedValueOnce(null);
+    vi.mocked(api.confirmDialog).mockResolvedValue(confirmed);
+    await useStore.getState().removeAccount("gemini", work.id);
+    expect(api.confirmDialog).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("Google access unrevoked") }));
+    expect(api.accountRemove).toHaveBeenCalledTimes(confirmed ? 2 : 1);
+    if (confirmed) expect(api.accountRemove).toHaveBeenLastCalledWith("gemini", work.id, true);
+  });
+
   it("offers Gemini accounts and uses the same active-account selector", async () => {
     expect(ACCOUNT_PROVIDERS).toContain("gemini");
     vi.mocked(api.accountsList).mockResolvedValue([{ ...main, provider: "gemini" }, work]);

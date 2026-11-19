@@ -83,6 +83,12 @@ pub fn read_models_for_account(program: &Path, folder: Option<&Path>, timeout: D
 /// An empty private profile must be signed out, even if the app is signed in.
 /// Refuse an unrecognized response rather than opening an unsafe login.
 pub fn verify_file_auth(program: &Path, timeout: Duration) -> Result<(), String> {
+    use std::sync::{Mutex, OnceLock};
+    static VERIFIED: OnceLock<Mutex<BTreeMap<std::path::PathBuf, std::time::SystemTime>>> = OnceLock::new();
+    let binary = program.canonicalize().map_err(|e| e.to_string())?;
+    let modified = binary.metadata().and_then(|m| m.modified()).map_err(|e| e.to_string())?;
+    let mut verified = VERIFIED.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+    if verified.get(&binary) == Some(&modified) { return Ok(()); }
     // The fallback-cache mechanism is internal. Unknown CLI versions must not
     // silently choose a different credential backend, even when the main
     // account happens to be signed out during the empty-profile probe.
@@ -97,7 +103,10 @@ pub fn verify_file_auth(program: &Path, timeout: Duration) -> Result<(), String>
     super::launch::prepare_file_auth(directory.path())?;
     let env = super::launch::environment_for_account(Some(directory.path())).resolve(std::env::vars());
     match read_models_with(program, &env, timeout) {
-        Err(error) if error.contains("Please sign in to view available models") => Ok(()),
+        Err(error) if error.contains("Please sign in to view available models") => {
+            verified.insert(binary, modified);
+            Ok(())
+        },
         _ => Err(super::launch::ISOLATION_ERROR.into()),
     }
 }
@@ -206,7 +215,12 @@ pub fn read_status(program: &Path, timeout: Duration) -> ProviderAuthStatus {
 }
 
 pub fn read_status_for_account(program: &Path, folder: Option<&Path>, timeout: Duration) -> ProviderAuthStatus {
+    read_status_with_identity(program, folder, timeout, true)
+}
+
+pub fn read_status_with_identity(program: &Path, folder: Option<&Path>, timeout: Duration, identity: bool) -> ProviderAuthStatus {
     match read_models_for_account(program, folder, timeout) {
+        Ok(_) if !identity => ProviderAuthStatus { provider: Provider::Gemini, logged_in: Some(true), setup_required: None, method: Some("google".into()), account: None, plan: None, problem: None },
         Ok(_) => {
             let identity = super::quota::read_identity_for_account(program, folder, timeout.min(Duration::from_secs(10)));
             let setup = matches!(&identity, Err(problem) if problem == super::quota::SETUP_HINT);
@@ -327,8 +341,15 @@ done
         assert!(verify_file_auth(&program, Duration::from_secs(2)).is_err());
         write("echo 'network unavailable' >&2; exit 1");
         assert!(verify_file_auth(&program, Duration::from_secs(2)).is_err());
-        write("echo 'Error: Please sign in to view available models.' >&2; exit 1");
+        let count = dir.path().join("checks");
+        write(&format!("echo probe >> '{}'\necho 'Please sign in to view available models' >&2; exit 1", count.display()));
         assert!(verify_file_auth(&program, Duration::from_secs(2)).is_ok());
+        assert!(verify_file_auth(&program, Duration::from_secs(2)).is_ok());
+        assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 1);
+        let modified = program.metadata().unwrap().modified().unwrap();
+        std::fs::File::open(&program).unwrap().set_modified(modified + Duration::from_secs(2)).unwrap();
+        assert!(verify_file_auth(&program, Duration::from_secs(2)).is_ok());
+        assert_eq!(std::fs::read_to_string(count).unwrap().lines().count(), 2);
     }
 
     #[cfg(unix)]

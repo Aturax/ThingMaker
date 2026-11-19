@@ -323,15 +323,6 @@ impl AppState {
     /// The settings folder of account `id` (the active one when `None`),
     /// shared with the person's main folder again before it is used. `None`
     /// for the default account, which is the person's own folder.
-    pub fn account_folder(&self, provider: Provider, id: Option<&str>) -> Option<PathBuf> {
-        self.try_account_folder(provider, id).unwrap_or_else(|error| {
-            tracing::warn!(%error, "could not prepare the account");
-            None
-        })
-    }
-
-    /// Operations using Gemini must propagate setup errors, never fall back
-    /// to the main sign-in when a profile cannot be prepared.
     pub fn try_account_folder(&self, provider: Provider, id: Option<&str>) -> Result<Option<PathBuf>, DesktopError> {
         use thingmaker_supervisor::agents::accounts;
         let id = id.map(str::to_string).unwrap_or_else(|| self.active_account(provider));
@@ -419,6 +410,21 @@ mod account_tests {
         state.with_storage(|s| s.setting_set(accounts::ACCOUNTS_SETTING, GLOBAL_SCOPE, &list)).unwrap();
         assert!(state.try_account_folder(Provider::Gemini, Some("acct-test")).is_err());
         assert!(state.try_account_folder(Provider::Gemini, Some("default")).unwrap().is_none());
+    }
+
+    #[test]
+    fn claude_and_codex_report_unusable_account_folders() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut state = AppState::initialize(dir.path(), None).unwrap();
+            state.home = Some(dir.path().join("home"));
+            let account = accounts::Account { id: "work".into(), provider, label: "Work".into() };
+            state.with_storage(|s| s.setting_set(accounts::ACCOUNTS_SETTING, GLOBAL_SCOPE, &[account])).unwrap();
+            let folder = accounts::account_folder(dir.path(), provider, "work");
+            std::fs::create_dir_all(folder.parent().unwrap()).unwrap();
+            std::fs::write(folder, "not a directory").unwrap();
+            assert!(state.try_account_folder(provider, Some("work")).is_err());
+        }
     }
 
     #[test]

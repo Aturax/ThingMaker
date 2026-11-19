@@ -46,7 +46,7 @@ export function ProviderAccounts({ provider }: { provider: Provider }) {
   const list = accounts ?? [];
   return (
     <div className="provider-accounts">
-      {provider === "gemini" && <p className="small muted">{t("Additional Gemini accounts use a private home folder. CLI settings and history are shared; files saved in that home are kept when you remove the account.")}</p>}
+      {provider === "gemini" && <p className="small muted">{t("Additional Gemini accounts use a private home folder. Git and Rust tools use your usual configuration. CLI settings and history are shared, and files saved in the private home are kept on removal.")}</p>}
       {list.length > 1 && <span className="local-cap">{t("Accounts")}</span>}
       {list.length > 1 &&
         list.map((account) => {
@@ -78,6 +78,7 @@ export function ProviderAccounts({ provider }: { provider: Provider }) {
                     <span className="small muted" title={account.auth?.problem ?? undefined}>
                       {signedIn ? [account.auth?.account, account.auth?.plan].filter(Boolean).join(" · ") || t("Signed in") : account.auth?.problem ? t("Could not be asked") : t("Not signed in")}
                     </span>
+                    {account.conflicts?.map((file) => <span className="small" key={file}>{t("Kept the main settings. Your other copy is at {file}.", { file })}</span>)}
                   </span>
                 )}
               </label>

@@ -168,7 +168,7 @@ pub(crate) fn build_launch(
             options.permission_mode = permission_for(record);
             options.resume = resume;
             // The active account; its folder shares everything but the sign-in.
-            options.config_dir = state.account_folder(Provider::Claude, None);
+            options.config_dir = state.try_account_folder(Provider::Claude, None)?;
             (LaunchTarget::executable(resolved.program), AgentLaunch::Claude(options))
         }
         Provider::Codex => {
@@ -178,7 +178,7 @@ pub(crate) fn build_launch(
             options.effort = effort;
             options.permission_mode = permission_for(record);
             options.resume = resume;
-            options.codex_home = state.account_folder(Provider::Codex, None);
+            options.codex_home = state.try_account_folder(Provider::Codex, None)?;
             (LaunchTarget::executable(resolved.program), AgentLaunch::Codex(options))
         }
         Provider::Gemini => {

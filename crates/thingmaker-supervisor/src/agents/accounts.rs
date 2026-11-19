@@ -9,7 +9,7 @@
 //! private home: arbitrary files tools create there are retained on removal.
 //!
 //! The person's own folders (`~/.claude`, `~/.codex`, `~/.gemini`) are the default
-//! account. Gemini's shared configuration directories are created as needed;
+//! account. Gemini links existing configuration directories;
 //! its credentials are never linked or copied.
 
 use std::path::{Path, PathBuf};
@@ -91,7 +91,7 @@ const CLAUDE_IDENTITY_KEYS: &[&str] = &["oauthAccount", "userID", "primaryApiKey
 /// Makes `folder` an account folder sharing everything in `main` but the
 /// sign-in. Called before each use, so what was added to the main folder
 /// since is shared too. Only ever creates links and the account's own files
-/// in `folder`; Gemini also creates missing shared directories in `main`.
+/// in `folder`; Gemini can also publish a saved settings file to `main`.
 pub fn share(provider: Provider, main: &Path, folder: &Path, home: &Path) -> std::io::Result<()> {
     if provider == Provider::Gemini {
         return share_gemini(main, folder, home);
@@ -160,8 +160,10 @@ fn share_gemini(main: &Path, folder: &Path, home: &Path) -> std::io::Result<()> 
     // timeout markers stay private, including names introduced by future agy builds.
     for name in ["config", "skills", "commands"] {
         let source = main.join(name);
-        std::fs::create_dir_all(&source)?;
         let target = gemini.join(name);
+        publish_private_directory(&target, &source)?;
+        if !source.try_exists()? { continue; }
+        if !source.is_dir() { return Err(std::io::Error::other(format!("expected a directory at {}", source.display()))); }
         // Old profiles contained a real config directory with only an MCP
         // link. Preserve other private configuration before replacing it.
         if target.is_dir() && !profile_link(&target)? {
@@ -183,19 +185,54 @@ fn share_gemini(main: &Path, folder: &Path, home: &Path) -> std::io::Result<()> 
     for name in ["conversations", "brain", "knowledge", "implicit", "mcp", "plugin_data", "builtin", "bin"] {
         let source = main_cli.join(name);
         let target = cli.join(name);
-        std::fs::create_dir_all(&source)?;
+        if name == "conversations" { publish_private_directory(&target, &source)?; }
+        if !source.is_dir() { continue; }
         if target.symlink_metadata().is_err() { gemini_link(&source, &target)?; }
     }
     for name in ["settings.json", "keybindings.json"] {
-        share_gemini_file(&main_cli.join(name), &cli.join(name))?;
+        share_gemini_file(folder, &main_cli.join(name), &cli.join(name))?;
     }
     for name in ["GEMINI.md", "settings.json", "trustedFolders.json", "projects.json"] {
-        share_gemini_file(&main.join(name), &gemini.join(name))?;
+        share_gemini_file(folder, &main.join(name), &gemini.join(name))?;
     }
     Ok(())
 }
 
-fn share_gemini_file(source: &Path, target: &Path) -> std::io::Result<()> {
+// If the CLI created shared content first in the extra account, publish that
+// populated directory on the next preparation without seeding empty main folders.
+fn publish_private_directory(target: &Path, source: &Path) -> std::io::Result<()> {
+    if !source.try_exists()? && target.is_dir() && !profile_link(target)? && std::fs::read_dir(target)?.next().transpose()?.is_some() {
+        if let Some(parent) = source.parent() { std::fs::create_dir_all(parent)?; }
+        std::fs::rename(target, source)?;
+    }
+    Ok(())
+}
+
+fn preserve_conflict(folder: &Path, target: &Path) -> std::io::Result<()> {
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let backup = folder.join(format!("{name}.conflict-{stamp}-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::rename(target, &backup)?;
+    tracing::warn!(file = %backup.display(), "saved conflicting Gemini settings");
+    Ok(())
+}
+
+pub fn gemini_conflicts(folder: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(folder).into_iter().flatten().flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".conflict-"))
+        .map(|entry| entry.path()).collect()
+}
+
+fn share_gemini_file(folder: &Path, source: &Path, target: &Path) -> std::io::Result<()> {
+    // Resolve managed dotfiles before publishing by rename, including a dangling final destination.
+    let mut destination = source.to_path_buf();
+    for _ in 0..40 {
+        if !destination.is_symlink() { break; }
+        let link = std::fs::read_link(&destination)?;
+        destination = destination.parent().unwrap_or(Path::new("")).join(link);
+    }
+    if destination.is_symlink() { return Err(std::io::Error::other("shared setting contains a symlink loop")); }
+    let source = destination.as_path();
     let original = target.with_extension("thingmaker-shared-hash");
     if original.symlink_metadata().is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(std::io::Error::other("shared-settings metadata must not be a link"));
@@ -204,12 +241,14 @@ fn share_gemini_file(source: &Path, target: &Path) -> std::io::Result<()> {
     if !source.exists() && target.symlink_metadata().is_ok_and(|metadata| metadata.is_file()) {
         if let Some(baseline) = baseline.as_deref() {
             if blake3::hash(&std::fs::read(target)?).to_hex().as_str() != baseline {
-                return Err(std::io::Error::other("the shared setting was removed and this profile changed it; reconcile before using the account"));
+                preserve_conflict(folder, target)?;
+            } else {
+                std::fs::remove_file(target)?;
             }
-            std::fs::remove_file(target)?;
             std::fs::remove_file(original)?;
             return Ok(());
         }
+        if let Some(parent) = source.parent() { std::fs::create_dir_all(parent)?; }
         match std::fs::hard_link(target, source) {
             Ok(()) => {},
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
@@ -227,6 +266,11 @@ fn share_gemini_file(source: &Path, target: &Path) -> std::io::Result<()> {
             #[cfg(windows)]
             let _ = metadata;
             if !shared {
+                if target.is_symlink() && !target.exists() {
+                    std::fs::remove_file(target)?;
+                    gemini_link(source, target)?;
+                    return std::fs::write(original, source_hash);
+                }
                 let target_bytes = std::fs::read(target)?;
                 let target_hash = blake3::hash(&target_bytes).to_hex().to_string();
                 if target_hash != source_hash && baseline.as_deref() == Some(source_hash.as_str()) {
@@ -239,9 +283,9 @@ fn share_gemini_file(source: &Path, target: &Path) -> std::io::Result<()> {
                         .and_then(|()| std::fs::rename(&temp, source));
                     if let Err(error) = outcome { let _ = std::fs::remove_file(temp); return Err(error); }
                 } else if target_hash != source_hash && baseline.as_deref() != Some(target_hash.as_str()) {
-                    return Err(std::io::Error::other(format!("{} and {} both changed; reconcile them before using this account", target.display(), source.display())));
+                    preserve_conflict(folder, target)?;
                 }
-                std::fs::remove_file(target)?;
+                if target.symlink_metadata().is_ok() { std::fs::remove_file(target)?; }
                 gemini_link(source, target)?;
             }
         } else { gemini_link(source, target)?; }
@@ -252,8 +296,26 @@ fn share_gemini_file(source: &Path, target: &Path) -> std::io::Result<()> {
 
 /// Remove credentials and provider links, retaining files and links tools wrote in `~`.
 pub fn remove_gemini_profile(folder: &Path) -> std::io::Result<()> {
+    if folder.symlink_metadata().is_ok() && profile_link(folder)? {
+        return Err(std::io::Error::other("account directory must not be a link"));
+    }
     let gemini = folder.join(".gemini");
-    if gemini.exists() { std::fs::remove_dir_all(gemini)?; }
+    if gemini.symlink_metadata().is_ok() && profile_link(&gemini)? {
+        remove_profile_link(&gemini)?;
+    } else if gemini.exists() {
+        // Newly initialized accounts may have written content before the main
+        // CLI created a matching directory. Keep those files outside the profile.
+        for (root, names) in [(&gemini, &["config", "skills", "commands"][..]), (&gemini.join("antigravity-cli"), &["conversations", "brain", "knowledge", "implicit", "mcp", "plugin_data"][..])] {
+            if !root.is_dir() || profile_link(root)? { continue; }
+            for name in names {
+                let child = root.join(name);
+                if child.is_dir() && !profile_link(&child)? && std::fs::read_dir(&child)?.next().transpose()?.is_some() {
+                    std::fs::rename(&child, folder.join(format!("gemini-{name}.saved-{}", uuid::Uuid::new_v4().simple())))?;
+                }
+            }
+        }
+        std::fs::remove_dir_all(gemini)?;
+    }
     if folder.is_dir() && std::fs::read_dir(folder)?.next().is_none() { std::fs::remove_dir(folder)?; }
     Ok(())
 }
@@ -424,6 +486,8 @@ mod tests {
         let main = home.join(".gemini");
         let work = home.join("Library/ThingMaker/accounts/work");
         let personal = home.join("Library/ThingMaker/accounts/personal");
+        std::fs::create_dir_all(main.join("antigravity-cli/conversations")).unwrap();
+        std::fs::write(main.join("antigravity-cli/conversations/kept.json"), "conversation").unwrap();
         std::fs::create_dir_all(main.join("config/plugins")).unwrap();
         std::fs::write(main.join("trustedFolders.json"), "{}").unwrap();
         std::fs::write(main.join("projects.json"), "{}").unwrap();
@@ -454,6 +518,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(work.join("result.txt")).unwrap(), "user work");
         assert!(work.join("outputs").is_dir(), "user-created links must survive account removal");
         assert!(!work.join(".gemini").exists());
+        assert_eq!(std::fs::read_to_string(main.join("antigravity-cli/conversations/kept.json")).unwrap(), "conversation");
+        assert!(!main.join("antigravity-cli/bin").exists());
         assert!(main.join("config/config.json").is_file());
         assert!(personal.join(".gemini/config/config.json").is_file());
     }
@@ -470,9 +536,31 @@ mod tests {
         std::fs::remove_file(&target).unwrap();
         std::fs::write(&target, "private update").unwrap();
         std::fs::write(main.join("settings.json"), "main update").unwrap();
-        assert!(share(Provider::Gemini, &main, &folder, dir.path()).unwrap_err().to_string().contains("reconcile"));
+        share(Provider::Gemini, &main, &folder, dir.path()).unwrap();
         assert_eq!(std::fs::read_to_string(main.join("settings.json")).unwrap(), "main update");
-        assert_eq!(std::fs::read_to_string(target).unwrap(), "private update");
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "main update");
+        let backups = gemini_conflicts(&folder);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), "private update");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn profile_saves_preserve_main_dotfile_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join(".gemini");
+        let folder = dir.path().join("account");
+        std::fs::create_dir_all(&main).unwrap();
+        let managed = dir.path().join("managed");
+        std::fs::write(&managed, "original").unwrap();
+        std::os::unix::fs::symlink("../managed", main.join("settings.json")).unwrap();
+        share(Provider::Gemini, &main, &folder, dir.path()).unwrap();
+        let local = folder.join(".gemini/settings.json");
+        std::fs::remove_file(&local).unwrap();
+        std::fs::write(&local, "updated").unwrap();
+        share(Provider::Gemini, &main, &folder, dir.path()).unwrap();
+        assert!(main.join("settings.json").is_symlink());
+        assert_eq!(std::fs::read_to_string(managed).unwrap(), "updated");
     }
 
     #[test]
@@ -497,6 +585,22 @@ mod tests {
     }
 
     #[test]
+    fn an_added_accounts_first_conversation_is_shared_without_creating_empty_cli_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("home/.gemini");
+        let folder = dir.path().join("account");
+        share(Provider::Gemini, &main, &folder, dir.path()).unwrap();
+        assert!(!main.exists());
+        let history = folder.join(".gemini/antigravity-cli/conversations");
+        std::fs::create_dir_all(&history).unwrap();
+        std::fs::write(history.join("first"), "content").unwrap();
+        share(Provider::Gemini, &main, &folder, dir.path()).unwrap();
+        remove_gemini_profile(&folder).unwrap();
+        assert_eq!(std::fs::read_to_string(main.join("antigravity-cli/conversations/first")).unwrap(), "content");
+        assert!(!main.join("antigravity-cli/bin").exists());
+    }
+
+    #[test]
     fn gemini_new_shared_files_and_main_resets_do_not_leave_private_copies() {
         let dir = tempfile::tempdir().unwrap();
         let main = dir.path().join("home/.gemini");
@@ -518,6 +622,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let main = dir.path().join("home/.gemini");
         let folder = dir.path().join("account");
+        std::fs::create_dir_all(main.join("config")).unwrap();
         std::fs::create_dir_all(folder.join(".gemini/config/plugins")).unwrap();
         std::fs::write(folder.join(".gemini/config/config.json"), "private preferences").unwrap();
         share(Provider::Gemini, &main, &folder, dir.path()).unwrap();

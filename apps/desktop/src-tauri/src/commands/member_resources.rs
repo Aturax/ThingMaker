@@ -17,9 +17,9 @@ pub struct CatalogView {
 
 fn catalog_for(state: &AppState, root: Option<&Path>) -> CommandResult<ResourceCatalog> {
     let home = state.home.as_deref().ok_or_else(|| DesktopError::not_ready("HOME is not set"))?;
-    let folder = state.account_folder(Provider::Claude, None).or_else(|| accounts::main_folder(Provider::Claude, home))
+    let folder = state.try_account_folder(Provider::Claude, None)?.or_else(|| accounts::main_folder(Provider::Claude, home))
         .ok_or_else(|| DesktopError::not_ready("Claude account folder is unavailable"))?;
-    let codex_folder = state.account_folder(Provider::Codex, None).or_else(|| accounts::main_folder(Provider::Codex, home))
+    let codex_folder = state.try_account_folder(Provider::Codex, None)?.or_else(|| accounts::main_folder(Provider::Codex, home))
         .ok_or_else(|| DesktopError::not_ready("Codex account folder is unavailable"))?;
     member_resources::catalog_with_homes(home, &folder, &codex_folder, root)
 }

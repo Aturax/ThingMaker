@@ -42,11 +42,11 @@ pub struct ProviderInfo {
 
 /// A provider's sign-in, for the account whose folder is `folder` (the
 /// person's own when `None`).
-pub(crate) fn auth_status(resolved: &ResolvedProvider, folder: Option<&Path>) -> ProviderAuthStatus {
+pub(crate) fn auth_status(resolved: &ResolvedProvider, folder: Option<&Path>, gemini_accounts: bool) -> ProviderAuthStatus {
     match resolved.provider {
         Provider::Claude => claude::auth::read_status(&resolved.program, &resolved.prefix_args, folder, Duration::from_secs(30)),
         Provider::Codex => codex::probe::read_status(&resolved.program, folder, Duration::from_secs(30)),
-        Provider::Gemini => gemini::probe::read_status_for_account(&resolved.program, folder, Duration::from_secs(30)),
+        Provider::Gemini => gemini::probe::read_status_with_identity(&resolved.program, folder, Duration::from_secs(30), gemini_accounts),
         // "Signed in" for Local Models means Ollama answers: there is no
         // account. Its version stands where an account would.
         Provider::Local => match thingmaker_supervisor::agents::local::ollama::Ollama::local().version() {
@@ -71,6 +71,7 @@ fn claude_environment(folder: Option<&Path>) -> EnvironmentProfile {
 /// CLI), so this runs off the command thread.
 #[tauri::command]
 pub async fn providers_status(state: State<'_, AppState>) -> CommandResult<Vec<ProviderInfo>> {
+    let gemini_accounts = state.accounts().iter().any(|a| a.provider == Provider::Gemini);
     let resolved: Vec<_> = Provider::ALL.iter().map(|provider| {
         let result = state.resolve_provider(*provider).and_then(|resolved| state.try_account_folder(*provider, None).map(|folder| (resolved, folder)));
         (*provider, result)
@@ -82,7 +83,7 @@ pub async fn providers_status(state: State<'_, AppState>) -> CommandResult<Vec<P
                 Ok((resolved, folder)) => ProviderInfo {
                     provider,
                     label: provider.label(),
-                    auth: Some(auth_status(&resolved, folder.as_deref())),
+                    auth: Some(auth_status(&resolved, folder.as_deref(), gemini_accounts)),
                     resolved: Some(resolved),
                     problem: None,
                 },
@@ -313,13 +314,13 @@ pub async fn provider_quota(provider: Provider, state: State<'_, AppState>) -> C
             let script = resolved.prefix_args.first().map(std::path::PathBuf::from).unwrap_or_default();
             let binary = claude::usage_probe::locate_claude_binary(&script, &home)
                 .ok_or_else(|| DesktopError::not_ready("Claude Code's own program was not found beside the adapter"))?;
-            let folder = state.account_folder(Provider::Claude, None);
+            let folder = state.try_account_folder(Provider::Claude, None)?;
             tauri::async_runtime::spawn_blocking(move || claude::usage_probe::read_quota(&binary, folder.as_deref(), Duration::from_secs(30)).map_err(DesktopError::io))
                 .await
                 .map_err(|error| DesktopError::io(error.to_string()))??
         }
         Provider::Codex => {
-            let folder = state.account_folder(Provider::Codex, None);
+            let folder = state.try_account_folder(Provider::Codex, None)?;
             tauri::async_runtime::spawn_blocking(move || codex::probe::read_quota(&resolved.program, folder.as_deref(), Duration::from_secs(30)).map_err(DesktopError::io))
                 .await
                 .map_err(|error| DesktopError::io(error.to_string()))??

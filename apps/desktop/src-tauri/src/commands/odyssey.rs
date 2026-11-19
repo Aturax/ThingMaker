@@ -642,8 +642,9 @@ pub fn odyssey_claude_preflight(state: State<'_, AppState>) -> CommandResult<Cla
     // whether the account has room. A spent account is no place to move a run.
     let home = state.home.clone().unwrap_or_default();
     let script = resolved.prefix_args.first().map(std::path::PathBuf::from).unwrap_or_default();
+    let folder = state.try_account_folder(Provider::Claude, None)?;
     if let Some(binary) = thingmaker_supervisor::agents::claude::usage_probe::locate_claude_binary(&script, &home)
-        && let Ok(snapshot) = thingmaker_supervisor::agents::claude::usage_probe::read_quota(&binary, state.account_folder(thingmaker_supervisor::agents::Provider::Claude, None).as_deref(), std::time::Duration::from_secs(20))
+        && let Ok(snapshot) = thingmaker_supervisor::agents::claude::usage_probe::read_quota(&binary, folder.as_deref(), std::time::Duration::from_secs(20))
     {
         if let Some(delegation) = state.delegation.get() {
             delegation.note_quota(snapshot.clone());
@@ -660,7 +661,7 @@ pub fn odyssey_claude_preflight(state: State<'_, AppState>) -> CommandResult<Cla
     }
     // Without it, the model list: slower, and it proves sign-in only.
     let scratch = state.data_dir.join("provider-probe");
-    match auth::read_models(&resolved.program, &resolved.prefix_args, &scratch, std::time::Duration::from_secs(45)) {
+    match auth::read_models_for_account(&resolved.program, &resolved.prefix_args, &scratch, folder.as_deref(), std::time::Duration::from_secs(45)) {
         Ok(models) if !models.is_empty() => Ok(ClaudeAccountStatus { available: true, reset_at_unix: None, message: None, problem: None }),
         Ok(_) => Ok(ClaudeAccountStatus {
             available: false,
