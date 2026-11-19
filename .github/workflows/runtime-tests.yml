@@ -14,5 +14,6 @@ jobs:
         with:
           node-version: 24
       - run: npm ci --prefix runtime/web --ignore-scripts
+      - run: npm ci --prefix runtime/local-mcp --ignore-scripts
       - run: node runtime/web/node_modules/playwright-core/cli.js install chromium --only-shell
       - run: node --test "runtime/**/*.test.mjs"
