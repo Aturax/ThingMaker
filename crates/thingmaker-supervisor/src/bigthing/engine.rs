@@ -326,6 +326,8 @@ impl Engine {
             reopened.insert(goal.id.clone(), now);
         }
         let row = self.db(|storage| storage.session_get(row_id)).ok().flatten()?;
+        // A pre-policy session may still have its lead selection in the saved goal.
+        // The host gives an existing per-session policy precedence on resume.
         let (resources, combo) = team_of(goal).map(|(lead, combo)| {
             (lead.resources.filter(|_| lead.provider == Some(row.provider)), Some(combo))
         }).unwrap_or_default();

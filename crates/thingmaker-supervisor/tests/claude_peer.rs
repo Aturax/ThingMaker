@@ -793,6 +793,8 @@ async fn a_background_command_is_followed_even_when_its_output_file_appears_late
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].state, BackgroundTaskState::Running);
 
+    // Older adapters can publish the file after the original ten-poll deadline.
+    tokio::time::sleep(Duration::from_secs(11)).await;
     std::fs::write(&output, "building…\ndone\n\n[exited with code 0]\n").unwrap();
     let ended = collect(&mut subscription, Duration::from_secs(10), |event| matches!(event, SessionEvent::BackgroundTask(task) if task.state != BackgroundTaskState::Running)).await;
     let SessionEvent::BackgroundTask(task) = ended.last().unwrap() else { unreachable!() };

@@ -1371,6 +1371,71 @@ mod recovery_tests {
     }
 
     #[test]
+    fn cloud_policies_survive_reopen_and_native_or_summary_forks_into_another_workspace() {
+        use thingmaker_supervisor::integrations::member_resources::ResourceSelection;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        let db = Storage::open(&path).unwrap();
+        let source = db.workspace_upsert("source", "source", "a").unwrap().id;
+        let dest = db.workspace_upsert("dest", "dest", "b").unwrap().id;
+        let selected = ResourceSelection { skills: vec!["skill:exact".into()], mcps: vec![] };
+        let empty = ResourceSelection::default();
+        for (id, provider, policy) in [("lead", Provider::Claude, &empty), ("worker", Provider::Codex, &selected)] {
+            db.session_upsert_with_resources(&source, id, SessionOrigin::Desktop, provider, Some(policy)).unwrap();
+            // Identical transcript IDs in another workspace must not select that workspace's policy.
+            db.session_upsert(&dest, id, SessionOrigin::Desktop, provider).unwrap();
+        }
+        drop(db);
+        let db = Storage::open(&path).unwrap();
+        for (id, expected) in [("lead", empty), ("worker", selected)] {
+            let origin = ForkSource { workspace_id: source.clone(), agent_session_id: id.into() };
+            for (workspace, mode, reference) in [
+                (&source, OpenRequestMode::Resume { session_id: id.into() }, None),
+                (&dest, OpenRequestMode::Fork { session_id: id.into() }, Some(&origin)),
+                (&dest, OpenRequestMode::New, Some(&origin)),
+            ] {
+                let row = source_record(&db, workspace, &mode, reference).unwrap().unwrap();
+                let (model, policy) = restore_setup(&db, Some(&row), Some("requested model".into()), Some(ResourceSelection::default())).unwrap();
+                assert_eq!(model.as_deref(), Some("requested model"));
+                assert_eq!(policy.as_ref(), Some(&expected));
+            }
+            let old = db.session_by_agent_id(&dest, id).unwrap().unwrap();
+            assert_eq!(restore_setup(&db, Some(&old), None, None).unwrap().1, Some(ResourceSelection::default()));
+            // Legacy Big Thing resumes can provide their saved team policy.
+            assert_eq!(restore_setup(&db, Some(&old), None, Some(expected.clone())).unwrap().1, Some(expected.clone()));
+            let inherited = db.session_upsert_with_resources(&dest, id, SessionOrigin::Desktop, old.provider, None).unwrap();
+            assert_eq!(restore_setup(&db, Some(&inherited), None, Some(expected)).unwrap().1, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn restoring_an_empty_cloud_selection_keeps_web_out_of_both_harnesses() {
+        use thingmaker_supervisor::integrations::member_resources as resources;
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::initialize(dir.path(), None).unwrap();
+        let catalog = resources::catalog(dir.path(), &dir.path().join(".claude"), None).unwrap();
+        let workspace = state.with_storage(|s| s.workspace_upsert("/w", "/w", "w")).unwrap();
+        for mut launch in [
+            AgentLaunch::Claude(ClaudeLaunchOptions::new(dir.path(), "node", vec![])),
+            AgentLaunch::Codex(CodexLaunchOptions::new(dir.path(), "codex")),
+        ] {
+            let provider = launch.provider();
+            let row = state.with_storage(|s| s.session_upsert_with_resources(
+                &workspace.id, provider.as_str(), SessionOrigin::Desktop, provider, Some(&ResourceSelection::default()),
+            )).unwrap();
+            let (_, policy) = state.with_storage(|s| restore_setup(s, Some(&row), None, None)).unwrap();
+            let resolved = resources::resolve(&catalog, &policy.unwrap(), &Default::default()).unwrap();
+            let builtin_web = resolved.builtin_web;
+            resources::apply_to_launch(resolved, &mut launch).unwrap();
+            let mut config = SessionActorConfig::new(LaunchTarget::executable("test"), launch);
+            config.builtin_web = builtin_web;
+            assert!(super::super::web::prepare(&state, &mut config).await.is_none());
+            assert!(!config.builtin_web);
+            assert!(config.mcp_servers.is_empty());
+        }
+    }
+
+    #[test]
     fn listing_recovers_existing_transcripts_but_preserves_archives_and_missing_files() {
         let temp = tempfile::tempdir().unwrap();
         let mut state = AppState::initialize(&temp.path().join("data"), None).unwrap();

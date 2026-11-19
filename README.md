@@ -96,6 +96,17 @@ flowchart LR
 
 ThingMaker pins the lent Chrome tab to one chat and the site you selected. Choosing another site requires lending it again. The agent can read the main document and use visible controls. You handle controls that require trusted keyboard input and interactions inside embedded frames. Its isolated searches and visual reads continue independently. OpenCode Browse's extension and relay are maintained by Anomaly under the MIT license.
 
+### Resuming an older Claude or Codex session
+
+ThingMaker saves each new session’s selection of skills and MCP servers, including
+the choice to inherit the provider’s configuration. Resuming or forking restores
+that selection. For older sessions, Big Thing can recover the selection from a
+saved team with a matching lead. If the original selection is unknown, the session
+reopens with an empty selection of optional resources. If Claude Code reports that
+its adapter cannot enforce the selection, update the adapter. To choose tools again,
+start a new session from the desired team preset, or start a new session using
+the provider’s inherited configuration.
+
 ### Shared Web tab
 
 Open **Web** next to **Crew** and **Screen** in a desktop conversation. Claude Code and Codex receive per-session MCP tools for search, citation and navigation, including when their configured model comes from a third-party endpoint. A model must support tool calls. Local agents stay offline by default. Each attachment has its own browser. If you customize the agent’s resources, select **ThingMaker Web** to include web access.

@@ -420,6 +420,7 @@ impl Storage {
     ) -> Result<SessionRecord, StorageError> {
         let transaction = self.conn().unchecked_transaction()?;
         let record = self.session_upsert(workspace_id, agent_id, origin, provider)?;
+        // A stored null is an inherited launch policy. A missing key is an older row.
         self.setting_set(RESOURCE_SELECTION, &record.id, &resources)?;
         transaction.commit()?;
         Ok(record)
