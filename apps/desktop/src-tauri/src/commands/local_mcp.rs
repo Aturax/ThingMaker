@@ -36,7 +36,12 @@ pub async fn prepare(state: &AppState, config: &mut SessionActorConfig) -> Comma
         }
         spec
     }).collect();
-    let runtime = super::web::windows_runtime(state).map_err(DesktopError::not_ready)?;
+    let runtime = state.resource_dir.as_ref().map(|dir| dir.join("local-mcp-runtime"));
+    #[cfg(debug_assertions)]
+    let runtime = runtime.filter(|dir| dir.join("node.exe").is_file())
+        .or_else(|| Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist-local-mcp")));
+    let runtime = runtime.and_then(|dir| dunce::canonicalize(dir).ok()).filter(|dir| dir.join("node.exe").is_file())
+        .ok_or_else(|| DesktopError::not_ready("The local MCP runtime is missing. Reinstall ThingMaker."))?;
     let launcher = std::env::current_exe().map_err(|e| DesktopError::io(e.to_string()))?;
     let launch = json!({ "launcher": launcher, "workspace": workspace, "environment": environment, "servers": specs });
     let mut child = Command::new(runtime.join("node.exe"))

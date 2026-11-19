@@ -27,17 +27,27 @@ try {
         }
     }
 } finally { $zip.Dispose() }
-Copy-Item "$source/package.json","$source/package-lock.json","$source/session.mjs" $stage -Force
-& npm.cmd ci --prefix $stage --omit=dev --ignore-scripts --no-fund --no-audit
-if ($LASTEXITCODE -ne 0) { throw 'Could not stage locked web dependencies' }
-$env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $stage 'browsers'
-& "$stage/node.exe" "$stage/node_modules/playwright-core/cli.js" install chromium --only-shell
-if ($LASTEXITCODE -ne 0) { throw 'Could not stage Chromium' }
-# Playwright's installation bookkeeping contains the build machine's checkout
-# path. It is only needed by its downloader, never by the installed browser.
-$links = Join-Path $env:PLAYWRIGHT_BROWSERS_PATH '.links'
-if (Test-Path -LiteralPath $links) {
-    Get-ChildItem -LiteralPath $links -File -Force | Remove-Item -Force
-    Remove-Item -LiteralPath $links
+$dependencyHash = (Get-FileHash "$source/package-lock.json").Hash
+$stamp = Join-Path $stage '.dependencies'
+$ready = (Test-Path -LiteralPath $stamp) -and ((Get-Content -LiteralPath $stamp -Raw).Trim() -eq $dependencyHash) -and (Test-Path "$stage/node_modules/@modelcontextprotocol/sdk/package.json")
+Copy-Item "$source/package.json","$source/package-lock.json","$source/session.mjs","$source/public-network.mjs","$source/lent-document.mjs" $stage -Force
+if (!($ready -and (Test-Path "$stage/node_modules/playwright-core/cli.js") -and (Get-ChildItem "$stage/browsers/chromium_headless_shell-*/chrome-headless-shell-win64/chrome-headless-shell.exe" -ErrorAction SilentlyContinue))) {
+    & npm.cmd ci --prefix $stage --omit=dev --ignore-scripts --no-fund --no-audit
+    if ($LASTEXITCODE -ne 0) { throw 'Could not stage locked web dependencies' }
+    $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $stage 'browsers'
+    & "$stage/node.exe" "$stage/node_modules/playwright-core/cli.js" install chromium --only-shell
+    if ($LASTEXITCODE -ne 0) { throw 'Could not stage Chromium' }
+    # Playwright's installation bookkeeping contains the build machine's checkout
+    # path. It is only needed by its downloader, never by the installed browser.
+    $links = Join-Path $env:PLAYWRIGHT_BROWSERS_PATH '.links'
+    if (Test-Path -LiteralPath $links) {
+        Get-ChildItem -LiteralPath $links -File -Force | Remove-Item -Force
+        Remove-Item -LiteralPath $links
+    }
+    Get-ChildItem -LiteralPath $env:PLAYWRIGHT_BROWSERS_PATH -Filter 'debug.log' -File -Recurse | Remove-Item
+    Set-Content -LiteralPath $stamp -Value $dependencyHash
 }
-Get-ChildItem -LiteralPath $env:PLAYWRIGHT_BROWSERS_PATH -Filter 'debug.log' -File -Recurse | Remove-Item
+
+$catalog = & "$stage/node.exe" "$stage/session.mjs" --print-tool-catalog
+if ($LASTEXITCODE -ne 0 -or !$catalog) { throw 'Could not generate the web tool catalog' }
+[IO.File]::WriteAllText((Join-Path $stage 'tools.json'), ($catalog -join [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))

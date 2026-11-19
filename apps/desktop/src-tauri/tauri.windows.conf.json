@@ -1,7 +1,7 @@
 {
   "build": {
-    "beforeBuildCommand": "pnpm run build:vite && powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../../scripts/prepare-web-windows.ps1",
-    "beforeDevCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../../scripts/prepare-web-windows.ps1 && pnpm run dev:vite"
+    "beforeBuildCommand": "pnpm run build:vite && powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../../scripts/prepare-local-mcp-windows.ps1 && powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../../scripts/prepare-web-windows.ps1",
+    "beforeDevCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../../scripts/prepare-local-mcp-windows.ps1 && powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../../scripts/prepare-web-windows.ps1 && pnpm run dev:vite"
   },
   "app": {
     "windows": [
@@ -23,11 +23,6 @@
     "targets": [
       "nsis"
     ],
-    "windows": {
-      "webviewInstallMode": {
-        "type": "offlineInstaller"
-      }
-    },
     "resources": {
       "../dist-remote/": "remote-ui/",
       "../dist-web/node_modules/": "web-runtime/node_modules/",
@@ -36,7 +31,11 @@
       "../dist-web/session.mjs": "web-runtime/session.mjs",
       "../dist-web/package.json": "web-runtime/package.json",
       "../dist-web/package-lock.json": "web-runtime/package-lock.json",
-      "../dist-web/NODE-LICENSE.txt": "web-runtime/NODE-LICENSE.txt"
+      "../dist-web/NODE-LICENSE.txt": "web-runtime/NODE-LICENSE.txt",
+      "../dist-local-mcp/": "local-mcp-runtime/",
+      "../dist-web/lent-document.mjs": "web-runtime/lent-document.mjs",
+      "../dist-web/tools.json": "web-runtime/tools.json",
+      "../dist-web/public-network.mjs": "web-runtime/public-network.mjs"
     }
   }
 }

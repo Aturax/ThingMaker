@@ -94,6 +94,18 @@ pub fn run() {
     static LOG_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuard> = std::sync::OnceLock::new();
 
     let app = tauri::Builder::default()
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+                && let Some(state) = webview.try_state::<state::AppState>()
+            {
+                let mut sessions = state.web_sessions.lock().unwrap_or_else(|e| e.into_inner());
+                for (_, session) in sessions.extract_if(|id, _| id.starts_with("browser-")) {
+                    if let Ok(session) = session {
+                        tauri::async_runtime::spawn(async move { session.lock().await.close().await; });
+                    }
+                }
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())

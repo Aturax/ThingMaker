@@ -344,6 +344,7 @@ export type EventEnvelope = {
 };
 
 export type Snapshot = {
+  webAvailable?: boolean;
   handle: SessionHandle;
   /** The provider this attachment runs on, and so which account it spends. */
   provider: Provider;
@@ -1744,7 +1745,7 @@ export type WebFrame = {
 };
 export type WebAction =
   | { kind: "enable" | "frame" | "close" | "pair" | "unshare" | "listBrowse" }
-  | { kind: "attachBrowse"; key:string }
+  | { kind: "attachBrowse"; key:string; url:string }
   | { kind: "search"; query: string }
   | { kind: "open"; url: string }
   | { kind: "click"; revision: number; x: number; y: number }

@@ -1,4 +1,3 @@
-// THINGMAKER_WEB_MCP_DIR must point at a built web-mcp installation.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -7,7 +6,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-test("user and agent interact with the same live page without switching control", { skip: !process.env.THINGMAKER_WEB_MCP_DIR, timeout: 60000 }, async () => {
+test("user and agent interact with the same live page without switching control", { timeout: 60000 }, async () => {
   const site = createServer((req, res) => {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     if (req.url === "/chart") {
@@ -34,7 +33,7 @@ test("user and agent interact with the same live page without switching control"
   site.listen(0,"127.0.0.1");
   await once(site,"listening");
   const child = spawn(process.execPath,[fileURLToPath(new URL("./session.mjs",import.meta.url))], {
-    env:{ ...process.env, THINGMAKER_WEB_ENABLED:"0", WEB_SCOUT_ENV_FILE:"none", WEB_SCOUT_LLM_PROVIDER:"none" }, windowsHide:true
+    env:{ ...process.env, THINGMAKER_WEB_ENABLED:"0", THINGMAKER_WEB_TEST_LOOPBACK:"1", WEB_SCOUT_ENV_FILE:"none", WEB_SCOUT_LLM_PROVIDER:"none" }, windowsHide:true
   });
   child.stderr.pipe(process.stderr);
   const lines = createInterface({ input:child.stdout })[Symbol.asyncIterator]();

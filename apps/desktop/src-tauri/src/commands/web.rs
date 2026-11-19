@@ -1,9 +1,13 @@
 use super::CommandResult;
 use crate::state::AppState;
 use serde_json::{Value, json};
-use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
+#[cfg(any(test, windows))]
+use std::{path::PathBuf, process::Stdio};
 use tauri::State;
-use thingmaker_supervisor::{DesktopError, SessionHandle, security::EnvironmentProfile};
+use thingmaker_supervisor::{DesktopError, SessionHandle};
+#[cfg(windows)]
+use thingmaker_supervisor::security::EnvironmentProfile;
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines}, process::{Child, ChildStdin, ChildStdout, Command}, sync::Mutex};
 
 use thingmaker_supervisor::{
@@ -11,16 +15,35 @@ use thingmaker_supervisor::{
     supervisor::{AgentLaunch, SessionActor, SessionActorConfig, SessionEvent},
 };
 
+#[cfg(windows)]
+mod lazy;
+#[cfg(windows)]
+mod process_job;
+
 pub type Connection = Arc<Mutex<WebSession>>;
 pub struct WebSession {
+    command: Command,
+    runtime: Option<Runtime>,
+    listener: Option<tokio::task::JoinHandle<()>>,
+    closed: bool,
+}
+
+impl Drop for WebSession {
+    fn drop(&mut self) {
+        if let Some(listener) = &self.listener { listener.abort(); }
+    }
+}
+
+struct Runtime {
+    #[cfg(windows)]
+    endpoint: (String, String),
     child: Child,
     input: ChildStdin,
     output: Lines<BufReader<ChildStdout>>,
     seq: u64,
     browse_lease: Option<Arc<()>>,
 }
-#[cfg(not(windows))]
-const SCRIPT: &str = include_str!("../../../../../runtime/web/session.mjs");
+
 
 // One chat owns a lent target at a time. Dropping the session frees the lease.
 fn reserve_browse_tab(key: &str) -> Result<Arc<()>, String> {
@@ -44,36 +67,29 @@ pub(super) fn windows_runtime(state: &AppState) -> Result<PathBuf, String> {
 }
 
 impl WebSession {
+    #[cfg(not(windows))]
+    pub async fn launch(_: &AppState, _: bool) -> Result<(Connection, Value), String> {
+        Err("ThingMaker Web is available on Windows.".into())
+    }
+
+    #[cfg(windows)]
     pub async fn launch(state: &AppState, enabled: bool) -> Result<(Connection, Value), String> {
         let mut env_profile = EnvironmentProfile::trusted_local();
         if let Some(home) = &state.home { env_profile = env_profile.with_tool_paths(home); }
-        let env = env_profile.allow("WEB_SCOUT_SEARXNG_URL").allow("PLAYWRIGHT_BROWSERS_PATH").resolve(std::env::vars());
+        let env = env_profile.resolve(std::env::vars());
         #[cfg(windows)]
         let mut command = {
             let root = windows_runtime(state)?;
             let mut cmd = Command::new(root.join("node.exe"));
             cmd.arg(root.join("session.mjs")).current_dir(&root).env_clear().envs(env)
                 .env("THINGMAKER_BROWSE_BIN_DIR", state.data_dir.join("tools/browse"))
-                .env("THINGMAKER_WEB_MCP_DIR", &root).env("THINGMAKER_WEB_PORTABLE", "1")
+                .env("THINGMAKER_WEB_MCP_DIR", &root)
                 .env("PLAYWRIGHT_BROWSERS_PATH", root.join("browsers"));
             cmd
         };
-        #[cfg(not(windows))]
-        let mut command = {
-            let root = std::env::var_os("THINGMAKER_WEB_MCP_DIR").map(PathBuf::from)
-                .or_else(|| state.home.as_ref().map(|home| home.join("repos/web-mcp"))).ok_or("Home directory unavailable")?;
-            if !root.join("dist/src/tools/webSearch.js").is_file() {
-                return Err("Build web-mcp and set THINGMAKER_WEB_MCP_DIR to its installation directory, then reopen the session.".into());
-            }
-            let node = std::env::split_paths(env.get("PATH").map(String::as_str).unwrap_or(""))
-                .map(|dir| dir.join("node")).find(|p| p.is_absolute() && p.is_file()).ok_or("Node.js is required for web-mcp")?;
-            let mut cmd = Command::new(node);
-            cmd.args(["--input-type=module", "--eval", SCRIPT]).current_dir(&root).env_clear().envs(env)
-                .env("THINGMAKER_WEB_MCP_DIR", &root);
-            cmd
-        };
-        #[cfg(windows)]
         command.creation_flags(0x08000000);
+        #[cfg(test)]
+        command.env("THINGMAKER_WEB_TEST_LOOPBACK", "1");
         #[cfg(test)]
         for name in ["OPENCODE_BROWSER_HOME", "OPENCODE_BROWSER_PORT"] {
             if let Some(value) = std::env::var_os(name) {
@@ -81,10 +97,49 @@ impl WebSession {
                 command.env(name, value);
             }
         }
-        let mut child = command.env("THINGMAKER_WEB_ENABLED", if enabled { "1" } else { "0" })
+        command.env("THINGMAKER_WEB_ENABLED", if enabled { "1" } else { "0" })
             .env("WEB_SCOUT_ENV_FILE", "none").env("WEB_SCOUT_LLM_PROVIDER", "none").env("WEB_SCOUT_BROWSER_PREWARM", "false")
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).kill_on_drop(true)
-            .spawn().map_err(|e| e.to_string())?;
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).kill_on_drop(true);
+        let session = Arc::new(Mutex::new(Self { command, runtime: None, listener: None, closed: false }));
+        let entry = lazy::listen(&session, &windows_runtime(state)?).await?;
+        Ok((session, entry))
+    }
+
+    async fn runtime(&mut self) -> Result<&mut Runtime, String> {
+        if self.closed { return Err("The web session closed. Reopen the session to reconnect.".into()); }
+        if self.runtime.is_none() {
+            self.runtime = Some(Runtime::start(&mut self.command).await?);
+        }
+        Ok(self.runtime.as_mut().expect("runtime just initialized"))
+    }
+
+    pub(crate) async fn close(&mut self) {
+        self.closed = true;
+        if let Some(listener) = self.listener.take() { listener.abort(); }
+        if let Some(mut runtime) = self.runtime.take() {
+            // EOF asks the control script to close Chromium and its MCP client.
+            drop(runtime.input);
+            if !matches!(tokio::time::timeout(Duration::from_secs(3), runtime.child.wait()).await, Ok(Ok(_))) {
+                let _ = runtime.child.kill().await;
+            }
+        }
+    }
+
+    async fn control(&mut self, action: Value) -> Result<Value, String> {
+        self.runtime().await?.control(action).await
+    }
+}
+
+impl Runtime {
+    #[cfg(not(windows))]
+    async fn start(_: &mut Command) -> Result<Self, String> {
+        Err("ThingMaker Web is available on Windows.".into())
+    }
+
+    #[cfg(windows)]
+    async fn start(command: &mut Command) -> Result<Self, String> {
+        let mut child = command.spawn().map_err(|e| e.to_string())?;
+        process_job::track(&child)?;
         let input = child.stdin.take().ok_or("Missing web control pipe")?;
         let mut output = BufReader::new(child.stdout.take().ok_or("Missing web reply pipe")?).lines();
         let line = tokio::time::timeout(Duration::from_secs(10), output.next_line()).await.map_err(|_| "web-mcp startup timed out")?
@@ -92,17 +147,16 @@ impl WebSession {
         let ready: Value = serde_json::from_str(&line).map_err(|_| "Invalid web-mcp startup reply")?;
         let port = ready["port"].as_u64().ok_or("Missing web-mcp port")?;
         let token = ready["token"].as_str().ok_or("Missing web-mcp credential")?;
-        let entry = json!({"name":"thingmaker-web","type":"http","url":format!("http://127.0.0.1:{port}/mcp"),
-            "headers":[{"name":"Authorization","value":format!("Bearer {token}")}]});
-        Ok((Arc::new(Mutex::new(Self { child, input, output, seq: 0, browse_lease: None })), entry))
+        Ok(Self { endpoint: (format!("http://127.0.0.1:{port}/mcp"), format!("Bearer {token}")),
+            child, input, output, seq: 0, browse_lease: None })
     }
 
     async fn control(&mut self, action: Value) -> Result<Value, String> {
         let kind = action["kind"].as_str().unwrap_or_default();
-        if kind == "attachBrowse" {
+        let pending = if kind == "attachBrowse" {
             if self.browse_lease.is_some() { return Err("Unshare the current tab first.".into()); }
-            self.browse_lease = Some(reserve_browse_tab(action["key"].as_str().ok_or("Missing tab")?)?);
-        }
+            Some(reserve_browse_tab(action["key"].as_str().ok_or("Missing tab")?)?)
+        } else { None };
         self.seq += 1;
         let mut request = serde_json::to_vec(&json!({"id":self.seq,"action":action})).map_err(|e| e.to_string())?;
         request.push(b'\n');
@@ -111,9 +165,9 @@ impl WebSession {
             let mut reply: Value = serde_json::from_str(&line).map_err(|_| "Invalid web runtime reply")?;
             if reply["id"].as_u64() != Some(self.seq) { continue; }
             if let Some(error) = reply["error"].as_str() {
-                if kind == "attachBrowse" { self.browse_lease = None; }
                 return Err(error.to_owned());
             }
+            if let Some(lease) = pending { self.browse_lease = Some(lease); }
             if kind == "unshare" || reply["value"]["chrome"] == "disconnected" { self.browse_lease = None; }
             return Ok(reply["value"].take());
         }
@@ -122,13 +176,15 @@ impl WebSession {
 }
 
 pub async fn prepare(state: &AppState, config: &mut SessionActorConfig) -> Option<Result<Connection, String>> {
-    // A worker with a custom tool allowlist gets exactly its chosen resources.
+    if !cfg!(windows) { return None; }
+    // A local agent reaches the internet only with an explicit Web selection.
     let instructions = match &mut config.launch {
-        AgentLaunch::Claude(options) if (options.resources.is_none() || config.builtin_web)
+        AgentLaunch::Claude(options) if ((options.local.is_none() && options.resources.is_none()) || config.builtin_web)
             && options.local.as_ref().is_none_or(|l| l.kind == LocalKind::Agent) => &mut options.append_system_prompt,
-        AgentLaunch::Codex(options) if options.resources.is_none() || config.builtin_web => &mut options.developer_instructions,
+        AgentLaunch::Codex(options) if (!options.local && options.resources.is_none()) || config.builtin_web => &mut options.developer_instructions,
         _ => return None,
     };
+    config.builtin_web = true;
     Some(WebSession::launch(state, true).await.map(|(session, entry)| {
         config.mcp_servers.push(entry);
         instructions.get_or_insert_with(String::new).push_str("\nUse thingmaker-web web_search and web_read for background research. When text is insufficient for a chart or diagram, request web_read with screenshot=true. Use web_open, web_page and web_act for the shared Web tab. The user can edit the same page at any time. If the page changes unexpectedly, inspect web_page and continue from its current state.");
@@ -148,8 +204,7 @@ pub fn attach(state: &AppState, actor: &SessionActor, web: Option<Result<Connect
             }
             if let Some(live) = weak.upgrade() {
                 let mut session = live.lock().await;
-                let _ = session.child.kill().await;
-                session.browse_lease = None;
+                session.close().await;
             }
         });
     }
@@ -168,7 +223,8 @@ pub async fn web_browser_open(state: State<'_, AppState>) -> CommandResult<Sessi
 pub async fn web_control(handle: SessionHandle, action: Value, state: State<'_, AppState>) -> CommandResult<Value> {
     if handle.id.starts_with("browser-") {
         if action["kind"] == "close" {
-            state.web_sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(&handle.id);
+            let entry = state.web_sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(&handle.id);
+            if let Some(Ok(session)) = entry { session.lock().await.close().await; }
             return Ok(Value::Null);
         }
     } else {
@@ -179,8 +235,13 @@ pub async fn web_control(handle: SessionHandle, action: Value, state: State<'_, 
         .map_err(DesktopError::not_ready)?;
     if action.to_string().len() > 32768 { return Err(DesktopError::limit_exceeded("Web input too large")); }
     let mut session = session.lock().await;
-    tokio::time::timeout(Duration::from_secs(65), session.control(action)).await
-        .map_err(|_| DesktopError::not_ready("Web request timed out"))?.map_err(DesktopError::io)
+    match tokio::time::timeout(Duration::from_secs(65), session.control(action)).await {
+        Ok(result) => result.map_err(DesktopError::io),
+        Err(_) => {
+            session.close().await;
+            Err(DesktopError::not_ready("Web request timed out. Reopen the session."))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -193,6 +254,27 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn inherited_local_codex_resources_leave_web_offline() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppState::initialize(temp.path(), None).unwrap();
+        let program = temp.path().join("codex.exe");
+        let mut options = CodexLaunchOptions::new(temp.path(), program.clone());
+        options.local = true;
+        let mut config = SessionActorConfig::new(LaunchTarget::executable(program), AgentLaunch::Codex(options));
+        assert!(prepare(&state, &mut config).await.is_none());
+        assert!(config.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn dropping_a_pending_attachment_releases_its_tab() {
+        let key = "pending-attachment";
+        let pending = reserve_browse_tab(key).unwrap();
+        assert!(reserve_browse_tab(key).is_err());
+        drop(pending);
+        assert!(reserve_browse_tab(key).is_ok());
+    }
+
+    #[tokio::test]
     #[ignore = "requires a local Ollama model, Codex and the ThingMaker web runtime"]
     async fn local_codex_consults_javascript_without_losing_the_draft() {
         let temp = tempfile::tempdir().unwrap();
@@ -203,7 +285,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a tool-capable Ollama model, Codex, staged web runtime and internet"]
-    async fn local_agent_default_web_and_explicit_opt_out() {
+    async fn local_agent_web_requires_selection() {
         use thingmaker_supervisor::{acp::SessionUpdate, agents::codex::launch::CodexResources};
 
         for private in [true, false] {
@@ -220,9 +302,8 @@ mod tests {
                 config.target = LaunchTarget { executable: launcher.into(), prefix_args: vec![thingmaker_appcontainer::LAUNCH_ARG.into(), options.program.to_string_lossy().into_owned()] };
             }
             config.environment = config.environment.with_program_dir(&options.program);
-            if private {
-                options.resources = Some(CodexResources { skills: vec![], mcps: Default::default() });
-            }
+            options.resources = Some(CodexResources { skills: vec![], mcps: Default::default() });
+            config.builtin_web = !private;
             let web = prepare(&state, &mut config).await.transpose().unwrap();
             assert_eq!(web.is_none(), private);
             if let Some(connection) = &web {
@@ -302,6 +383,11 @@ mod tests {
             loop {
                 let line = output.next_line().await.unwrap().expect("Chrome test exited before completing");
                 if line == "Games opened" { break; }
+                if line == "clicked" {
+                    while !matches!(events.recv().await.unwrap().payload, SessionEvent::Turn(TurnEffect::Settled { .. })) {}
+                    input.write_all(b"revoke\n").await.unwrap();
+                    continue;
+                }
                 if line == "edited" {
                     while !matches!(events.recv().await.unwrap().payload, SessionEvent::Turn(TurnEffect::Settled { .. })) {}
                     actor.submit_text("chrome-edited", "Use thingmaker-web web_page now. Click the visible Open button for the currently selected category using web_act action click and its current snapshot ref.").await.unwrap();
@@ -318,7 +404,7 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "requires the installed ThingMaker AppContainer, its loopback permission and a tool-capable Ollama model"]
-    async fn local_claude_reads_a_source_with_default_web_access() {
+    async fn local_claude_reads_a_source_with_selected_web_access() {
         use thingmaker_supervisor::agents::{Provider, claude::launch::ClaudeLaunchOptions, local::LocalTarget};
         let profile = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("Packages/ThingMaker.LocalModels/AC");
         let scratch = tempfile::tempdir_in(profile).unwrap();
@@ -342,6 +428,7 @@ mod tests {
     }
 
     async fn check_live_read(state: &AppState, mut config: SessionActorConfig) {
+        config.builtin_web = true;
         let web = prepare(state, &mut config).await.unwrap().unwrap();
         let frame = web.lock().await.control(json!({"kind":"frame"})).await.unwrap();
         assert_eq!(frame["enabled"], true);

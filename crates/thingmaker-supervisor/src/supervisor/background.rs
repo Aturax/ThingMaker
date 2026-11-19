@@ -185,14 +185,25 @@ pub fn ending(tail: &str) -> Option<(BackgroundTaskState, Option<i64>, String)> 
 /// `tasks` folder of Claude Code's own folder under the temporary directory.
 /// The path comes from the agent's text, so nothing else is read through it.
 pub fn is_task_output(path: &Path) -> bool {
-    let Ok(real) = path.canonicalize() else { return false };
-    if real.extension().and_then(|ext| ext.to_str()) != Some("output") || real.parent().and_then(|parent| parent.file_name()).and_then(|name| name.to_str()) != Some("tasks") {
+    path.canonicalize().is_ok_and(|real| possible_task_output(&real))
+}
+
+pub fn possible_task_output(path: &Path) -> bool {
+    if !path.is_absolute() || path.components().any(|part| part == Component::ParentDir)
+        || path.extension().is_none_or(|ext| ext != "output")
+        || path.parent().and_then(Path::file_name).is_none_or(|name| name != "tasks") {
         return false;
     }
-    let temps = [Path::new("/tmp").canonicalize().ok(), Path::new("/private/tmp").canonicalize().ok(), std::env::temp_dir().canonicalize().ok()];
-    temps.iter().flatten().any(|temp| {
-        real.strip_prefix(temp).ok().and_then(|inside| inside.components().next()).is_some_and(|first| matches!(first, Component::Normal(name) if (name == "claude" || name.to_string_lossy().starts_with("claude-"))))
-    })
+    let temp = std::env::temp_dir();
+    [temp.as_path(), Path::new("/tmp"), Path::new("/private/tmp")].into_iter()
+        .filter(|root| root.is_absolute())
+        .any(|root| {
+            let canonical = root.canonicalize().ok();
+            [Some(root), canonical.as_deref()].into_iter().flatten().any(|root| {
+                path.strip_prefix(root).ok().and_then(|inside| inside.components().next())
+                    .is_some_and(|first| matches!(first, Component::Normal(name) if name == "claude" || name.to_string_lossy().starts_with("claude-")))
+            })
+        })
 }
 
 /// The file's length, and at most its last `limit` bytes as text, starting
@@ -285,6 +296,10 @@ mod tests {
         let output = temp.join("abc.output");
         std::fs::write(&output, "line 1\nline 2\n[exited with code 0]\n").unwrap();
         assert!(is_task_output(&output));
+        assert!(possible_task_output(&temp.join("late.output")));
+        assert!(!possible_task_output(&temp.join("../tasks/untrusted.output")));
+        #[cfg(windows)]
+        assert!(!possible_task_output(Path::new("/tmp/claude-1/project/tasks/gitbash.output")));
         let elsewhere = tempfile::tempdir().unwrap();
         let stranger = elsewhere.path().join("tasks").join("x.output");
         std::fs::create_dir_all(stranger.parent().unwrap()).unwrap();

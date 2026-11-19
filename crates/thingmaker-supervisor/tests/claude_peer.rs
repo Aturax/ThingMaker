@@ -807,6 +807,23 @@ async fn a_background_command_is_followed_even_when_its_output_file_appears_late
 }
 
 #[tokio::test]
+async fn a_background_command_with_an_unusable_output_path_stays_running() {
+    let root = tempfile::tempdir().unwrap();
+    let Some(config) = config(&["--background=/legacy-adapter/tasks/bmock1.output"], None, PermissionStance::AcceptEdits, root.path()) else { return };
+    let actor = SessionActor::open(config).await.expect("attached");
+    let mut events = actor.subscribe();
+    actor.submit_text("legacy-task", "start the background command").await.unwrap();
+    collect(&mut events, Duration::from_secs(5), |event|
+        matches!(event, SessionEvent::BackgroundTask(task) if task.output_path.is_some())).await;
+
+    // The old watcher synthesized a stop after ten unsuccessful file polls.
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    let tasks = actor.background_tasks().await.unwrap();
+    assert_eq!(tasks[0].state, BackgroundTaskState::Running);
+    actor.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_background_command_still_running_when_the_session_ends_ends_with_it() {
     let root = tempfile::tempdir().unwrap();
     let tasks = std::env::temp_dir().join(format!("claude-peer-stop-{}", std::process::id())).join("proj/session/tasks");

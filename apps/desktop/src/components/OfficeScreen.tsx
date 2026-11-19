@@ -319,7 +319,7 @@ export function OfficeScreen({ children, webHandle }: { children: ReactNode; web
       <div aria-label={t("Panel view")} className="office-view-switch" role="group">
         <button aria-pressed={view === "crew"} className="button small" onClick={() => setView("crew")} type="button">{t("Crew")}</button>
         <button aria-pressed={view === "screen"} className="button small" onClick={() => setView("screen")} type="button">{t("Screen")}{devices.length > 0 ? ` (${devices.length})` : ""}</button>
-        {webHandle && <button aria-pressed={view === "web"} className="button small" onClick={() => setView("web")} type="button">Web</button>}
+        {webHandle && <button aria-pressed={view === "web"} className="button small" onClick={() => setView("web")} type="button">{t("Web")}</button>}
       </div>
       {view === "web" && webHandle ? <WebView handle={webHandle} /> : view === "crew" ? children : (
         <div className="office-device-view">

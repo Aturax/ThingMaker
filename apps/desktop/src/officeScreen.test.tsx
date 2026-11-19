@@ -55,7 +55,7 @@ it("shows the pairing code, then reflects Chrome ownership on the next frame", a
   await act(async () => { fireEvent.click(screen.getByRole("button", {name:"Show lent tabs"})); });
   await act(async () => { fireEvent.click(screen.getByRole("button", {name:/Catalog ·/})); });
   expect(screen.queryByDisplayValue("ABCD-1234")).toBeNull();
-  expect(screen.getByText("Chrome tab shared")).toBeTruthy();
+  expect(screen.getByText("An agent is controlling your Chrome tab.")).toBeTruthy();
 });
 const tools = (overrides: Partial<ScreenTools> = {}): ScreenTools => ({ missing: [], canInstall: false, manager: null, plan: [], manual: null, ...overrides });
 const wingetPlan = ["winget.exe install --id Genymobile.scrcpy --exact --source winget --scope user --silent --accept-package-agreements --accept-source-agreements --disable-interactivity"];

@@ -21,8 +21,8 @@ pub const STEER_METHOD: &str = "_session/steering";
 /// capabilities. The desktop declares no filesystem or terminal callbacks, so
 /// agents read and write files themselves under their own permission mode
 /// rather than asking this process to do it.
-pub fn initialize_params(client: &ClientIdentity) -> Value {
-    json!({
+pub fn initialize_params(client: &ClientIdentity, claude_adapter: bool) -> Value {
+    let mut params = json!({
         "protocolVersion": PROTOCOL_VERSION,
         "clientInfo": {
             "name": client.name,
@@ -30,10 +30,14 @@ pub fn initialize_params(client: &ClientIdentity) -> Value {
             "version": client.version,
         },
         "clientCapabilities": {
-            "fs": { "readTextFile": false, "writeTextFile": false },
-            "_meta": { "jetbrains": { "air": { "version": 1, "capabilities": ["asyncTasks"] } } }
+            "fs": { "readTextFile": false, "writeTextFile": false }
         }
-    })
+    });
+    // claude-agent-acp uses JetBrains' asyncTasks extension for native task lifecycle events.
+    if claude_adapter {
+        params["clientCapabilities"]["_meta"] = json!({"jetbrains":{"air":{"version":1,"capabilities":["asyncTasks"]}}});
+    }
+    params
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,7 +158,8 @@ mod tests {
 
     #[test]
     fn initialize_params_advertise_v1_and_no_unimplemented_capabilities() {
-        let params = initialize_params(&ClientIdentity::default());
+        assert!(initialize_params(&ClientIdentity::default(), false)["clientCapabilities"].get("_meta").is_none());
+        let params = initialize_params(&ClientIdentity::default(), true);
         assert_eq!(params["protocolVersion"], 1);
         assert_eq!(params["clientCapabilities"]["_meta"]["jetbrains"]["air"]["capabilities"], json!(["asyncTasks"]));
         assert!(params["clientInfo"]["version"].is_string());

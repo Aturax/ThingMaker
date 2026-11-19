@@ -28,7 +28,7 @@ await once(site,"listening");
 const origin = "http://127.0.0.1:"+site.address().port;
 const lines = createInterface({input:process.stdin})[Symbol.asyncIterator]();
 const ctx = await chromium.launchPersistentContext("",{
-  channel:"chromium", headless:false, args:["--enable-unsafe-extension-debugging","--disable-extensions-except="+extension,"--load-extension="+extension],
+  channel:"chromium", headless:process.env.THINGMAKER_TEST_HEADLESS === "1", args:["--enable-unsafe-extension-debugging","--disable-extensions-except="+extension,"--load-extension="+extension],
   timeout:20000,
 });
 ctx.setDefaultTimeout(30000);
@@ -64,8 +64,13 @@ try {
     if (!lent) await new Promise(r=>setTimeout(r,250));
   }
   assert.ok(lent,"Browse did not lend the selected Chrome tab");
-  const attached = await ui({kind:"attachBrowse",key:lent.key});
+  const attached = await ui({kind:"attachBrowse",key:lent.key,url:lent.url});
   assert.ok(attached.chrome==="connected");
+  const refused = await fetch(server.url,{method:"POST",headers:{
+    Authorization:server.headers[0].value,"Content-Type":"application/json",Accept:"application/json, text/event-stream"
+  },body:JSON.stringify({jsonrpc:"2.0",id:7,method:"tools/call",params:{name:"web_open",arguments:{url:"https://example.com/"}}})}).then(r=>r.json());
+  assert.equal(refused.result.isError, true);
+  assert.equal(tab.url(), origin+"/catalog");
   console.log("shared");
   await lines.next();
   await tab.getByRole("button",{name:"Open Books"}).waitFor({timeout:120000});
@@ -78,6 +83,9 @@ try {
   assert.ok(await other.evaluate(()=>document.visibilityState==="visible"),"The other tab must remain in front");
   assert.equal(tab.url(),origin+"/catalog");
   console.error("Same chat opened Games while the other tab remained visible with its draft intact.");
+  // Let the in-flight click finish reading its post-action snapshot before revoking the loan.
+  console.log("clicked");
+  await lines.next();
   // A human revokes the loan by pressing the toolbar icon on the lent tab itself.
   await tab.bringToFront();
   await chrome.send("Extensions.triggerAction",{id:extensionId,targetId:target.targetId});

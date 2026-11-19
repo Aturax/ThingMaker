@@ -272,6 +272,7 @@ pub struct Snapshot {
     /// Which provider this attachment runs on. The renderer reads it to know
     /// which account a turn is charged to and which transcript to look in.
     pub provider: Provider,
+    pub web_available: bool,
     /// The agent's own id for the session, once `session/new` has answered.
     pub agent_session_id: Option<String>,
     pub process: ProcessState,
@@ -1033,6 +1034,7 @@ impl ActorState {
     /// it ended, or the actor is gone.
     fn watch_background(&self, task_id: String, path: String) {
         let path = std::path::PathBuf::from(path);
+        if !background::possible_task_output(&path) { return; }
         let internal = self.internal.clone();
         tokio::spawn(async move {
             let mut seen: Option<u64> = None;
@@ -1040,8 +1042,9 @@ impl ActorState {
             while !internal.is_closed() {
                 let file = path.clone();
                 let read = tokio::task::spawn_blocking(move || -> std::io::Result<(u64, Option<String>, i64)> {
-                    if !background::is_task_output(&file) {
-                        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "task output unavailable"));
+                    let file = file.canonicalize()?;
+                    if !background::possible_task_output(&file) {
+                        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "not a task output"));
                     }
                     let meta = std::fs::metadata(&file)?;
                     let modified = meta.modified().map(unix_ms).unwrap_or_else(|_| now_unix_ms() as i64);
@@ -1061,14 +1064,16 @@ impl ActorState {
                             return;
                         }
                     }
-                    _ => {
+                    Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
                         missing += 1;
                         if missing >= 10 {
+                            if seen.is_none() { return; }
                             let ending = "[its output file is gone]".to_string();
                             let _ = internal.send(Internal::BackgroundEnded { task_id, state: BackgroundTaskState::Stopped, exit_code: None, ending, ended_at_unix_ms: now_unix_ms() as i64 }).await;
                             return;
                         }
                     }
+                    _ => return,
                 }
                 time::sleep(Duration::from_secs(1)).await;
             }
@@ -1820,6 +1825,7 @@ impl ActorState {
         Snapshot {
             handle: self.handle.clone(),
             provider: self.launch.provider(),
+            web_available: cfg!(windows) && self.config.builtin_web,
             agent_session_id: self.agent_session_id.clone(),
             process: self.process,
             attachment: self.attachment,
@@ -2370,7 +2376,9 @@ async fn run_loop(
     });
     state.set_process(ProcessState::Negotiating);
     let control = state.config.timeouts.control;
-    let handshake = capabilities::initialize_params(&state.config.client);
+    let claude_adapter = matches!(&state.config.launch, AgentLaunch::Claude(options)
+        if options.local.as_ref().is_none_or(|local| local.kind == crate::agents::local::LocalKind::Agent));
+    let handshake = capabilities::initialize_params(&state.config.client, claude_adapter);
     state.spawn_request("initialize", handshake, control, None, Internal::InitializeResult);
     let mut tick = time::interval(Duration::from_secs(1));
     let mut incoming_open = true;

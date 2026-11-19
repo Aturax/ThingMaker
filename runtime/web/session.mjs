@@ -4,24 +4,20 @@ import { createServer } from "node:http";
 import { access, copyFile, link, mkdir, unlink } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { homedir } from "node:os";
+import { operateLentDocument } from "./lent-document.mjs";
+import { browserProxy, fetchDocument, httpUrl, publicAddress } from "./public-network.mjs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 
 const root = process.env.THINGMAKER_WEB_MCP_DIR || fileURLToPath(new URL(".", import.meta.url));
-const portable = process.env.THINGMAKER_WEB_PORTABLE === "1";
 const dep = createRequire(resolve(root, "package.json"));
-const load = path => import(pathToFileURL(resolve(root, "dist/src", path)));
-const legacySearch = portable ? null : await load("tools/webSearch.js");
-const legacyRead = portable ? null : await load("tools/webRead.js");
-const legacyIndex = portable ? null : await load("search/index.js");
 const { McpServer } = dep("@modelcontextprotocol/sdk/server/mcp.js");
 const { StreamableHTTPServerTransport } = dep("@modelcontextprotocol/sdk/server/streamableHttp.js");
 const { z } = dep("zod");
-const { chromium } = dep(portable ? "playwright-core" : "playwright");
+const { chromium } = dep("playwright-core");
 const results = new Map();
 let resultSequence = 0;
 const token = randomUUID();
@@ -39,19 +35,23 @@ function serialQueue() {
 }
 const ordered = serialQueue();
 const research = serialQueue();
-function httpUrl(target) {
-  const url = new URL(target);
-  if (!["http:", "https:"].includes(url.protocol)) throw Error("Use an HTTP or HTTPS URL");
-  return url.href;
-}
+let proxy;
 async function newContext() {
   if (!browser?.isConnected()) {
-    launching ??= chromium.launch({ headless: true }).finally(() => { launching = undefined; });
+    launching ??= (async () => {
+      proxy ??= await browserProxy();
+      return chromium.launch({ headless:true, proxy,
+        args:["--force-webrtc-ip-handling-policy=disable_non_proxied_udp","--disable-quic"] });
+    })().finally(() => { launching = undefined; });
     browser = await launching;
   }
-  const next = await browser.newContext({ viewport: { width: 960, height: 720 }, acceptDownloads: false });
+  const next = await browser.newContext({ viewport: { width: 960, height: 720 }, acceptDownloads: false, serviceWorkers:"block" });
   next.setDefaultTimeout(5000);
-  await next.route("**/*", route => /^https?:/i.test(route.request().url()) ? route.continue() : route.abort());
+  await next.route("**/*", async route => {
+    try { await publicAddress(new URL(httpUrl(route.request().url())).hostname); }
+    catch { return route.abort(); }
+    return route.continue();
+  });
   return next;
 }
 async function withResearchPage(work) {
@@ -120,7 +120,7 @@ async function browserSearch(source, {query, site, lang, freshness, max_results 
 }
 
 async function readPdf(url) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
+  const response = await fetchDocument(url);
   if (!response.ok) throw Error("Could not read PDF: HTTP "+response.status);
   const chunks = [];
   let bytes = 0;
@@ -136,13 +136,12 @@ const storeUrl = "https://chromewebstore.google.com/detail/browse/mfnicocicmmlkp
 const exec = promisify(execFile);
 let chromeTab, chromeDetached = false, browseClient;
 async function browseBinary() {
-  if (!portable) return resolve(homedir(), ".local/bin/browse");
   const pkg = "@opencode/browse-windows-x64";
   const source = resolve(root, "node_modules", pkg, "bin/browse.exe");
   const cache = process.env.THINGMAKER_BROWSE_BIN_DIR;
   if (!cache) return source;
-  // The relay lives beyond the desktop process. Run a versioned copy so an
-  // active relay cannot lock program files during the next Windows upgrade.
+  // Multiple chats can use the same relay. Keep its running image outside the
+  // installation directory while Windows stages a desktop update.
   const directory = resolve(cache, dep(pkg+"/package.json").version);
   const binary = resolve(directory, "browse.exe");
   try { await access(binary); return binary; }
@@ -177,35 +176,48 @@ async function lentTabs() {
     key:JSON.stringify([tab.browser, tab.targetId]), id:tab.tab, url:tab.url, title:tab.title,
   }));
 }
+function sameOrigin(value, origin) {
+  try { return new URL(httpUrl(value)).origin === origin; }
+  catch { return false; }
+}
 async function requireLentTab() {
   const current = (await lentTabs()).find(t => t.key === chromeTab.key && t.id === chromeTab.id);
-  if (!current) {
+  if (!current || !sameOrigin(current.url, chromeTab.origin)) {
     chromeDetached = true;
     chromeTab = undefined;
     throw Error("Chrome tab disconnected. Lend it again and choose it in ThingMaker.");
   }
-  chromeTab = current;
+  chromeTab = {...current, origin:chromeTab.origin};
   return current.id;
 }
 async function chromeCommand(command) {
   const tab = await requireLentTab();
-  const literal = JSON.stringify;
-  let action = "";
-  if (command.kind === "open") action = "await page.goto("+literal(command.url)+");";
-  if (command.kind === "act") {
-    const locator = command.ref ? "ref("+literal(command.ref)+")" :
-      "page.getByRole("+literal(command.role)+",{name:"+literal(command.name)+",exact:true})";
-    const value = literal(command.value);
-    const operations = { click:"click()", fill:"fill("+value+")", select:"selectOption({label:"+value+"})", press:"press("+value+")" };
-    action = "const element = "+locator+"; if (await element.count() !== 1) throw new Error("+
-      literal("Action not performed. Choose an element from this current snapshot. Use its ref or the complete role and name: ")+" + await snapshot({mode:'aria'})); await element."+operations[command.action]+";";
+  const origin = chromeTab.origin;
+  if (command.kind === "open" && !sameOrigin(command.url, origin)) {
+    throw Error("To use another site, lend its tab in ThingMaker.");
   }
-  const snapshot = await browseTool("execute",{tab, code:action+"return await snapshot({mode:'aria'});",timeoutMs:12000});
-  // Highlight what is selected now. In a long accessibility tree small models
-  // can otherwise mistake an unselected option (or an earlier turn) for it.
-  const selected = snapshot.split("\n").filter(line => /^\s*- option\b.*\[selected\]/.test(line));
-  const summary = selected.map(line => line.trim().replace(/^- option /,"")).join(", ").slice(0,1500);
-  return ((summary ? "Currently selected on this tab: "+summary+"\n" : "") + snapshot).slice(0,24000);
+  // Browse's Playwright-style actions and snapshots can span documents. Bind
+  // each read or edit to the document that checks the origin in the same task.
+  async function run(command) {
+    let result;
+    try {
+      const raw = await browseTool("eval", {tab, world:"isolated", expression:"(_, args) => (" + operateLentDocument.toString() + ")(args)",
+        arg:{origin, command},timeout:12000});
+      result = JSON.parse(raw);
+    } catch {
+      throw Error("Chrome action could not be completed on the shared site.");
+    }
+    if (result.disconnected) {
+      chromeDetached = true;
+      chromeTab = undefined;
+      throw Error("Chrome tab disconnected. Lend it again and choose it in ThingMaker.");
+    }
+    if (result.refused || typeof result.text !== "string") throw Error("Chrome action could not be completed on the shared site.");
+    return result.text;
+  }
+  const result = await run(command);
+  await requireLentTab();
+  return command.kind === "act" ? run({kind:"page"}) : result;
 }
 async function browsePair() {
   // With a zero wait Browse prints a valid code and exits 1 (not yet redeemed).
@@ -237,15 +249,15 @@ function makeServer() {
       return { content: typeof result === "string" ? [{ type: "text", text: result }] : result };
     }));
   }
-  const searchSchema = legacySearch?.webSearchSchema ?? {
+  const searchSchema = {
     query: z.string().min(1), site: z.string().optional(), lang: z.string().optional(),
     freshness: z.enum(["day","week","month","year"]).optional(), max_results: z.number().int().min(1).max(20).optional(),
   };
   tool("web_search", "Search for sources independently of the shared tab. Verify time-sensitive facts with web_read. If results are unrelated, read a known authoritative URL or public data API directly.", searchSchema,
-    args => portable ? withResearchPage(source => browserSearch(source, args)) : legacySearch.handleWebSearch(args), research);
+    args => withResearchPage(source => browserSearch(source, args)), research);
   const target = { url: z.string().optional(), result_id: z.string().optional() };
   function urlFor(args) {
-    const url = args.result_id ? (portable ? results.get(args.result_id) : legacyIndex.resultStore.resolve(args.result_id)?.url) : args.url;
+    const url = args.result_id ? results.get(args.result_id) : args.url;
     if (!url) throw Error("Supply a URL or a current search result_id");
     return httpUrl(url);
   }
@@ -256,36 +268,30 @@ function makeServer() {
   };
   tool("web_read", "Read a source URL or search result in isolation, including public JSON APIs. For a weather forecast, you can read api.open-meteo.com/v1/forecast using latitude, longitude, daily=precipitation_probability_max and the local timezone. Check the returned dates. Request a screenshot when text is insufficient.", readTarget, async args => {
     const url = urlFor(args);
-    const legacy = () => legacyRead.handleWebRead({ url, summarize: false, max_tokens: 4000 });
     if (args.scroll_y !== undefined && !args.screenshot) throw Error("scroll_y requires screenshot");
     if (/\.pdf(?:$|[?#])/i.test(url)) {
       if (args.screenshot) throw Error("Screenshots are available for web pages. Read this PDF as text.");
-      return portable ? readPdf(url) : legacy();
+      return readPdf(url);
     }
-    try {
-      const result = await withResearchPage(async source => {
-        await source.goto(url, { waitUntil: "domcontentloaded", timeout: 18000 });
-        // Give client-rendered pages time to fetch their content, even when
-        // they initially display a loading label. Long-polling sites are bounded.
-        await source.waitForLoadState("networkidle", { timeout: 3500 }).catch(() => {});
-        if (args.screenshot) {
-          if (args.scroll_y) await source.evaluate(y => window.scrollTo({ top: y, behavior: "instant" }), args.scroll_y);
-          const image = await source.screenshot({ type: "png", timeout: 5000 });
-          return [
-            { type: "text", text: source.url() },
-            { type: "image", mimeType: "image/png", data: image.toString("base64") },
-          ];
-        }
-        await source.waitForFunction(() => document.body?.innerText.trim(), null, { timeout: 3000 }).catch(() => {});
-        const body = (await source.locator("body").innerText()).trim();
-        return body && source.url()+"\n"+body.slice(0, 24000);
-      });
-      if (result) return result;
-      if (portable) throw Error("No readable text on this page. Try web_read with screenshot enabled.");
-    } catch (error) {
-      if (portable || args.screenshot) throw error;
-    }
-    return legacy();
+    const result = await withResearchPage(async source => {
+      await source.goto(url, { waitUntil: "domcontentloaded", timeout: 18000 });
+      // Give client-rendered pages time to fetch their content, even when
+      // they initially display a loading label. Long-polling sites are bounded.
+      await source.waitForLoadState("networkidle", { timeout: 3500 }).catch(() => {});
+      if (args.screenshot) {
+        if (args.scroll_y) await source.evaluate(y => window.scrollTo({ top: y, behavior: "instant" }), args.scroll_y);
+        const image = await source.screenshot({ type: "png", timeout: 5000 });
+        return [
+          { type: "text", text: source.url() },
+          { type: "image", mimeType: "image/png", data: image.toString("base64") },
+        ];
+      }
+      await source.waitForFunction(() => document.body?.innerText.trim(), null, { timeout: 3000 }).catch(() => {});
+      const body = (await source.locator("body").innerText()).trim();
+      return body && source.url()+"\n"+body.slice(0, 24000);
+    });
+    if (result) return result;
+    throw Error("No readable text on this page. Try web_read with screenshot enabled.");
   }, research);
   tool("web_open", "Navigate the shared Web tab. Supply a URL or search result_id.", target, async args => {
     if (chromeTab) return chromeCommand({kind:"open", url:urlFor(args)});
@@ -311,6 +317,21 @@ function makeServer() {
   });
   return server;
 }
+// Generate discovery metadata from the same SDK registrations used to run the tools.
+if (process.argv.includes("--print-tool-catalog")) {
+  const { Client } = dep("@modelcontextprotocol/sdk/client/index.js");
+  const { InMemoryTransport } = dep("@modelcontextprotocol/sdk/inMemory.js");
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+  const server = makeServer();
+  const client = new Client({name:"packager",version:"1"});
+  await server.connect(serverSide);
+  await client.connect(clientSide);
+  console.log(JSON.stringify(await client.listTools()));
+  await client.close();
+  await server.close();
+  process.exit(0);
+}
+
 const http = createServer(async (req, res) => {
   if (req.headers.origin || req.headers.authorization !== "Bearer "+token || req.url !== "/mcp") {
     res.writeHead(403).end(); return;
@@ -335,7 +356,10 @@ async function desktop(cmd) {
   if (cmd.kind === "attachBrowse" && enabled && !chromeTab) {
     const tab = (await lentTabs()).find(t => t.key === cmd.key);
     if (!tab) throw Error("Lend the tab using the Browse toolbar button first.");
-    chromeTab = tab;
+    const url = new URL(httpUrl(tab.url));
+    if (!sameOrigin(cmd.url, url.origin)) throw Error("The tab changed sites. Refresh the list and choose it again.");
+    await publicAddress(url.hostname);
+    chromeTab = {...tab, origin:url.origin};
     chromeDetached = false;
     revision++;
     return frame();
@@ -347,6 +371,7 @@ async function desktop(cmd) {
   }
   if (chromeTab || chromeDetached) {
     if (cmd.kind !== "frame") throw Error("Use Chrome to interact with the shared tab.");
+    if (chromeTab) await requireLentTab().catch(() => {});
     return frame();
   }
   if (cmd.kind === "enable") enabled = true;

@@ -2,9 +2,7 @@
 
 Models installed in [Ollama](https://ollama.com) on this computer, as a
 fourth provider beside Claude Code, Codex and Gemini. **Free:** nothing is
-billed and no account is used. Chat mode only contacts Ollama. Agent mode can search and read public
-websites through ThingMaker Web by default. To run an agent without these
-tools, customize its resources and leave ThingMaker Web unselected.
+billed and no account is used. Chat mode only contacts Ollama. Local agents stay offline by default. On Windows, selecting **ThingMaker Web** in an agent’s resources allows it to search and read public websites.
 
 ## Two ways to run a model
 
@@ -76,5 +74,4 @@ Ollama loads the model again when it is needed.
   Windows AppContainer and Codex through its app-server with an Ollama model.
   They check that the agent opens a real source in the shared browser.
   The browser handoff and filter selection can also be tested with
-  `node --test runtime/web/session.test.mjs` and `THINGMAKER_WEB_MCP_DIR`
-  pointing to a built web-mcp installation.
+  `node --test runtime/web/session.test.mjs` after installing the locked npm dependencies and Chromium headless shell in `runtime/web`.

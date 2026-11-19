@@ -3,6 +3,10 @@ import type { SessionHandle, WebAction, WebFrame } from "@thingmaker/contracts";
 import { api } from "../ipc";
 import { t } from "../i18n";
 
+export function supportsWeb() {
+  return /Windows|Win32|Win64/i.test(navigator.platform + " " + navigator.userAgent);
+}
+
 export function WebView({ handle, standalone = false }: { handle: SessionHandle; standalone?: boolean }) {
   const [frame, setFrame] = useState<WebFrame | null>(null);
   const [error, setError] = useState("");
@@ -69,10 +73,10 @@ export function WebView({ handle, standalone = false }: { handle: SessionHandle;
           <p>{t("Click Browse on the Chrome tab you want to lend, then choose it here.")}</p>
           <button className="button small" onClick={() => void request({kind:"listBrowse"})}>{t("Show lent tabs")}</button>
           {tabs?.length === 0 && <p>{t("No lent tabs found.")}</p>}
-          {tabs?.map(tab => <button className="button small" key={tab.key} onClick={() => void request({kind:"attachBrowse",key:tab.key})}>{tab.title} · {tab.url}</button>)}
+          {tabs?.map(tab => <button className="button small" key={tab.key} onClick={() => void request({kind:"attachBrowse",key:tab.key,url:tab.url})}>{tab.title} · {tab.url}</button>)}
         </>}
         {frame.chrome && <>
-          <p role="status">{t(frame.chrome === "disconnected" ? "Chrome tab disconnected" : "Chrome tab shared")}</p>
+          <p role="status">{t(frame.chrome === "disconnected" ? "Chrome tab disconnected" : "An agent is controlling your Chrome tab.")}</p>
           <button className="button small" onClick={() => void request({kind:"unshare"})}>{t("Return to built-in browser")}</button>
         </>}
         {!frame.chrome && <form onSubmit={event => {
@@ -121,10 +125,11 @@ export function BrowserLauncher() {
     }).catch(e => { if (!disposed) setError(e.message); });
     return () => { disposed = true; if (session) close(session); };
   }, [open]);
+  if (!supportsWeb()) return null;
   return <section>
     <button className="button" type="button" aria-expanded={open} onClick={() => { setHandle(null); setError(""); setOpen(!open); }}>
       {t(open ? "Close web browser" : "Open web browser")}
     </button>
-    {open && (handle ? <WebView handle={handle} standalone /> : <p role="status">{error || t("Connecting…")}</p>)}
+    {open && (handle ? <WebView handle={handle} standalone /> : <p role="status">{error ? t(error) : t("Connecting…")}</p>)}
   </section>;
 }

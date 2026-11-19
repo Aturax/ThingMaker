@@ -17,7 +17,7 @@ const site = createServer((_req, res) => {
 site.listen(0,"127.0.0.1");
 await once(site,"listening");
 const fixture = "http://127.0.0.1:"+site.address().port+"/";
-const env = {...process.env, PATH: process.env.SystemRoot+"\\System32", THINGMAKER_WEB_PORTABLE:"1", THINGMAKER_WEB_ENABLED:"1", PLAYWRIGHT_BROWSERS_PATH:join(root,"browsers")};
+const env = {...process.env, PATH: process.env.SystemRoot+"\\System32", THINGMAKER_WEB_TEST_LOOPBACK:"1", THINGMAKER_WEB_ENABLED:"1", PLAYWRIGHT_BROWSERS_PATH:join(root,"browsers")};
 delete env.THINGMAKER_WEB_MCP_DIR;
 delete env.WEB_SCOUT_SEARXNG_URL;
 const child = spawn(process.execPath,[join(root,"session.mjs")],{cwd:root,env,windowsHide:true});
@@ -96,15 +96,11 @@ try {
     const picture=panel.locator("img.web-frame");
     await picture.waitFor();
     assert.ok((await picture.getAttribute("src")).length>1000);
-    await address.fill(fixture);
+    await address.fill("https://example.com");
     await address.press("Enter");
-    await panel.getByText(fixture,{exact:true}).waitFor();
-    await picture.focus();
-    await picture.press("Tab");
-    const select=panel.getByRole("combobox");
-    await select.selectOption("Books");
-    await tab.waitForFunction(()=>document.querySelector(".office-web select")?.value==="Books");
-    evidence.desktop="Search, navigation, live frame and filter in the installed ThingMaker window";
+    await panel.getByText("https://example.com/",{exact:true}).waitFor();
+    await picture.waitFor();
+    evidence.desktop="Search, public navigation and live frame in the installed ThingMaker window";
     console.log(evidence.desktop);
   }
   console.log(JSON.stringify(evidence));
