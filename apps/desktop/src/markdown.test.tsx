@@ -39,7 +39,7 @@ describe("markdown blocks", () => {
     expect(pills).toHaveLength(2);
     expect(pills[0]?.textContent).toBe("Artifact95s9H5Vy");
     expect(pills[1]?.textContent).toBe("the evolutions page");
-    expect(pills[0]?.getAttribute("title")).toBe(`Open ${url} in your browser`);
+    expect(pills[0]?.getAttribute("title")).toBe(`Open ${url}`);
     fireEvent.click(pills[0] as Element);
     expect(opened).toHaveBeenCalledWith(url);
     // The address is not printed out alongside its pill.

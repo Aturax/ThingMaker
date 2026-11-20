@@ -199,7 +199,7 @@ function linkTo(href: string, label: ReactNode | null, key: number, onLink?: Lin
   const artifact = ARTIFACT.exec(href);
   if (artifact) {
     return (
-      <button className="artifact-link" key={key} onClick={() => onLink?.(href)} title={t("Open {url} in your browser", { url: href })} type="button">
+      <button className="artifact-link" key={key} onClick={() => onLink?.(href)} title={t("Open {url}", { url: href })} type="button">
         <IconSpark size={12} />
         <span className="artifact-link-label">{label ?? t("Artifact")}</span>
         {label === null && <span className="artifact-link-id mono">{(artifact[1] ?? "").slice(0, 8)}</span>}

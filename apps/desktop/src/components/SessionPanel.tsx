@@ -15,6 +15,7 @@ import { TerminalPane } from "./TerminalPane";
 import { AgentsPane } from "./AgentsPane";
 import { ContextPane } from "./ContextPane";
 import { ArtifactsPane } from "./ArtifactsPane";
+import { openArtifact, opensInPanel } from "../artifactView";
 import { ActivityBar } from "./ActivityBar";
 import { ToolGroup } from "./ToolGroup";
 import { ToolPayloads } from "./ToolPayloads";
@@ -191,7 +192,7 @@ function EarlierConversation({ sessionId }: { sessionId: string }) {
       {messages.map((card) => (
         <article className={`card card-${card.message.role} card-earlier`} key={`earlier-${card.key}`}>
           {card.message.role !== "user" && <header className="small muted">{PROVIDER_LABELS[from]}</header>}
-          <Blocks blocks={shownBlocks(card)} markdown={card.message.role !== "user"} onLink={(url) => void openUrl(url)} workspaceId={session.workspaceId} />
+          <Blocks blocks={shownBlocks(card)} markdown={card.message.role !== "user"} onLink={(url) => (opensInPanel(url) ? openArtifact(url) : void openUrl(url))} workspaceId={session.workspaceId} />
         </article>
       ))}
       <div className="continued-divider small muted" role="separator">
@@ -337,7 +338,7 @@ function CardBody({ card, sessionId }: { card: Card; sessionId: string }) {
     const projection = s.sessions[sessionId]?.projection;
     return projection?.plan?.key === card.key && (projection.foreground === "running" || projection.foreground === "awaiting_user");
   });
-  const onLink = (url: string) => void openUrl(url);
+  const onLink = (url: string) => (opensInPanel(url) ? openArtifact(url) : void openUrl(url));
   switch (card.kind) {
     case "message":
       // An answer is marked by its provider's logo in the gutter rather than
@@ -572,7 +573,7 @@ export const GROUPED_VIEWS: { id: SessionTab; label: string; icon: (props: { siz
     },
     icon: IconBox,
     get hint() {
-      return t("Files the run produced");
+      return t("Claude artifacts from this conversation");
     },
   },
   {
@@ -1299,7 +1300,7 @@ export function SessionPanel({ sessionId }: { sessionId: string }) {
       {tab === "terminal" && <TerminalPane workspaceId={session.workspaceId} />}
       {tab === "agents" && <AgentsPane sessionId={sessionId} />}
       {tab === "context" && <ContextPane sessionId={sessionId} />}
-      {tab === "artifacts" && <ArtifactsPane agentSessionId={session.snapshot.agentSessionId} workspaceId={session.workspaceId} />}
+      {tab === "artifacts" && <ArtifactsPane sessionId={sessionId} />}
       {tab === "images" && <ImagesPane sessionId={sessionId} />}
       {tab === "odyssey" && <OdysseyPane sessionId={sessionId} />}
       {tab === "ultrareview" && <UltraReviewPane sessionId={sessionId} />}

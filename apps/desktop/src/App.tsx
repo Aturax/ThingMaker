@@ -7,6 +7,7 @@ import { Sidebar } from "./components/Sidebar";
 import { WorkspaceView } from "./components/WorkspaceView";
 import { SessionPanel } from "./components/SessionPanel";
 import { OfficePane } from "./components/OfficePane";
+import { ArtifactPanel } from "./components/ArtifactPanel";
 import { UpdatePrompt } from "./components/AppUpdate";
 import { StartingPanel } from "./components/StartingPanel";
 import { SignInPanel } from "./components/SignInPanel";
@@ -194,6 +195,11 @@ export function App() {
             </ErrorBoundary>
           </div>
         </section>
+        {!IS_REMOTE && (
+          <ErrorBoundary label={t("Artifact")}>
+            <ArtifactPanel />
+          </ErrorBoundary>
+        )}
       </div>
     </div>
   );

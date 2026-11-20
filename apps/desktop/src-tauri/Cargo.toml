@@ -21,7 +21,8 @@ tauri-build = { version = "=2.6.3", features = [] }
 thingmaker-voice = { path = "../../../crates/thingmaker-voice" }
 thingmaker-appcontainer = { path = "../../../crates/thingmaker-appcontainer" }
 thingmaker-supervisor = { path = "../../../crates/thingmaker-supervisor" }
-tauri = { version = "=2.11.5", features = ["tray-icon", "image-png"] }
+# "unstable" is Tauri's multi-webview support: the artifact panel is a second webview in the main window.
+tauri = { version = "=2.11.5", features = ["tray-icon", "image-png", "unstable"] }
 tauri-plugin-dialog = "=2.7.3"
 tauri-plugin-opener = "=2.5.5"
 tauri-plugin-notification = "=2.4.0"

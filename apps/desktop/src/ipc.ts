@@ -437,6 +437,9 @@ export const api = {
   odysseyWorkspaceNotes: (workspaceId: string) => call<WorkspaceNotes>(COMMANDS.odysseyWorkspaceNotes, { request: { workspaceId } }),
   sessionRecords: (workspaceId: string) => call<SessionRecord[]>(COMMANDS.sessionRecords, { workspaceId }),
   openExternal: (url: string) => call<void>(COMMANDS.openExternal, { url }),
+  artifactViewShow: (url: string, bounds: { x: number; y: number; width: number; height: number }) => call<void>(COMMANDS.artifactViewShow, { url, bounds }),
+  artifactViewBounds: (bounds: { x: number; y: number; width: number; height: number }) => call<void>(COMMANDS.artifactViewBounds, { bounds }),
+  artifactViewHide: () => call<void>(COMMANDS.artifactViewHide),
   providersStatus: () => call<ProviderInfo[]>(COMMANDS.providersStatus),
   providerSetLocation: (provider: Provider, location: ProviderLocation | null) =>
     call<void>(COMMANDS.providerSetLocation, { request: { provider, location } }),

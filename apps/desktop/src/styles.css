@@ -3683,48 +3683,91 @@ body.resizing-sidebar * {
   gap: 8px;
   flex: 1;
   min-height: 0;
-  padding: 10px 22px;
+  overflow: auto;
+  padding: 12px 22px;
 }
 
-.artifacts-body {
-  display: grid;
-  grid-template-columns: minmax(260px, 380px) 1fr;
-  gap: 12px;
-  flex: 1;
-  min-height: 240px;
+.artifacts-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 48px auto;
+  max-width: 360px;
+  text-align: center;
+  color: var(--muted);
 }
 
-.artifact-list {
+.artifacts-empty p {
+  margin: 0;
+}
+
+.artifacts-empty > p:first-of-type {
+  color: var(--text);
+}
+
+.artifacts-list {
   list-style: none;
   margin: 0;
-  padding: 0 8px 0 0;
-  overflow: auto;
-  border-right: 1px solid var(--border);
-}
-
-.artifact-group {
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.artifact-viewer {
-  overflow: auto;
-  min-height: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  max-width: 760px;
 }
 
-.artifact-viewer .monaco {
-  min-height: 320px;
-  flex: 1;
-}
-
-.artifact-image {
-  max-width: 100%;
-  height: auto;
+.artifacts-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 6px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.artifacts-row:hover,
+.artifacts-row-on {
+  border-color: var(--focus);
+}
+
+.artifacts-open {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.artifacts-open > svg {
+  flex: none;
+  color: var(--focus);
+}
+
+.artifacts-open:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  border-radius: var(--radius);
+}
+
+.artifacts-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.artifacts-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .config-table {
@@ -11051,4 +11094,73 @@ html[data-platform="android"] { --traffic-lights: 8px; --titlebar: 52px; height:
 
 .context-item.context-danger {
   color: var(--error);
+}
+
+/* ---------- Artifact panel (spike) ----------
+ * A claude.ai artifact beside the conversation. The page itself is a native
+ * view laid over .artifact-panel-body. */
+.artifact-panel {
+  position: relative;
+  flex: none;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.artifact-panel-full {
+  flex: 1;
+}
+
+/* Full width: the artifact takes the conversation's place. */
+.artifact-full .shell > .main {
+  display: none;
+}
+
+.artifact-panel-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+
+.artifact-panel-resize:hover {
+  background: color-mix(in srgb, var(--accent, #ff6b22) 40%, transparent);
+}
+
+.artifact-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--titlebar);
+  flex: none;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.artifact-panel-title {
+  font-weight: 600;
+}
+
+.artifact-panel-id {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.artifact-panel-space {
+  flex: 1;
+}
+
+.artifact-panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }

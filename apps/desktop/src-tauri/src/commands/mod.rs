@@ -23,6 +23,7 @@ pub mod review;
 pub mod runtime_env;
 pub mod session;
 pub mod skills;
+pub mod artifact_view;
 pub mod bigthing;
 pub mod support;
 pub mod terminal;

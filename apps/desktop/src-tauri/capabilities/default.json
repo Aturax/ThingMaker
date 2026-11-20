@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2/capability",
   "identifier": "default",
-  "description": "Main trusted application window. Only core window/event permissions; every privileged operation goes through the narrow application commands, which validate inputs in Rust (SEC-10). Preview windows must receive a separate, empty capability.",
-  "windows": [
+  "description": "Main trusted application window. Only core window/event permissions; every privileged operation goes through the narrow application commands, which validate inputs in Rust (SEC-10). Only the main webview has it: the artifact view in the same window shows remote pages and has no capability.",
+  "webviews": [
     "main"
   ],
   "permissions": [
