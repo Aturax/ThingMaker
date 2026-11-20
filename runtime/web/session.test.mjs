@@ -81,9 +81,9 @@ test("user and agent interact with the same live page without switching control"
     assert.match((await call("web_open",{url})).content[0].text,/Category/);
     let frame = await ui({kind:"frame"});
     assert.ok(frame.image);
-    frame = await ui({kind:"key",key:"Tab",revision:frame.revision});
+    frame = await ui({kind:"key",key:"Tab",revision:frame.revision,navigation:frame.navigation});
     assert.equal(frame.choices[1].label,"Books");
-    frame = await ui({kind:"select",value:"Books",revision:frame.revision});
+    frame = await ui({kind:"select",value:"Books",revision:frame.revision,navigation:frame.navigation});
     const source = await call("web_read",{url:url+"/source"});
     assert.equal(source.content[0].text,url+"/source\nTM-431 isolated");
     const chart = url+"/chart";
@@ -108,20 +108,23 @@ test("user and agent interact with the same live page without switching control"
     const action = {action:"click",role:"button",name:"Books"};
     assert.match((await call("web_page")).content[0].text,/button "Books"/);
     assert.match((await call("web_act",action)).content[0].text,/Books opened/);
-    const stale = await rawUi({kind:"click",x:10,y:10,revision:after.revision});
+    const stale = await rawUi({kind:"click",x:10,y:10,revision:after.revision,navigation:after.navigation});
     assert.match(stale.error,/Page changed/);
     const current = await ui({kind:"frame"});
     assert.notEqual(current.revision,after.revision);
-    await ui({kind:"key",key:"Tab",revision:current.revision});
+    await ui({kind:"key",key:"Tab",revision:current.revision,navigation:current.navigation});
     assert.equal(after.storeUrl, "https://chromewebstore.google.com/detail/browse/mfnicocicmmlkpjnaffgihfjhdgjkdjg");
     const before = await ui({kind:"open",url:url+"/dynamic"});
     releaseMutation();
     await mutated;
     // The page replaced its controls: a click aimed at the old frame is refused.
-    const staleClick = await rawUi({kind:"click",x:10,y:10,revision:before.revision});
+    const staleClick = await rawUi({kind:"click",x:10,y:10,revision:before.revision,navigation:before.navigation});
     assert.match(staleClick.error,/Page changed/);
     const fresh = await ui({kind:"frame"});
-    await ui({kind:"text",text:"fresh",revision:fresh.revision});
+    await ui({kind:"text",text:"fresh",revision:fresh.revision,navigation:fresh.navigation});
+    // Typing aimed at a page from before a navigation is refused too.
+    const typedStale = await rawUi({kind:"text",text:"elsewhere",revision:fresh.revision,navigation:frame.navigation});
+    assert.match(typedStale.error,/Page changed/);
     assert.match((await call("web_page")).content[0].text,/fresh/);
   } finally { releaseMutation(); child.stdin.end(); site.close(); }
 });

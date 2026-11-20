@@ -102,7 +102,7 @@ ThingMaker saves each new session’s selection of skills and MCP servers, inclu
 the choice to inherit the provider’s configuration. Resuming or forking restores
 that selection. For older sessions, Big Thing can recover the selection from a
 saved team with a matching lead. If the original selection is unknown, the session
-reopens with an empty selection of optional resources. If Claude Code reports that
+reopens with the provider's inherited configuration, as before. If Claude Code reports that
 its adapter cannot enforce the selection, update the adapter. To choose tools again,
 start a new session from the desired team preset, or start a new session using
 the provider’s inherited configuration.

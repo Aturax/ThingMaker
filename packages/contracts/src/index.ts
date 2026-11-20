@@ -1751,7 +1751,7 @@ export type ScreenDevice = { id: string; name: string; platform: "android" | "io
 export type WebFrame = {
   storeUrl?: string | null; chrome?: "connected" | "disconnected"; pairingCode?: string; relayAddress?: string;
   lentTabs?: {key:string; title:string; url:string}[];
-  enabled: boolean; activity: string; revision: number; url: string; image: string | null;
+  enabled: boolean; activity: string; revision: number; navigation: number; url: string; image: string | null;
   choices: { label: string; value: string; selected: boolean }[];
 };
 export type WebAction =
@@ -1759,11 +1759,11 @@ export type WebAction =
   | { kind: "attachBrowse"; key:string; url:string }
   | { kind: "search"; query: string }
   | { kind: "open"; url: string }
-  | { kind: "click"; revision: number; x: number; y: number }
-  | { kind: "scroll"; revision: number; x: number; y: number; dy: number }
-  | { kind: "key"; revision: number; key: string }
-  | { kind: "select"; revision: number; value: string }
-  | { kind: "text"; revision: number; text: string };
+  | { kind: "click"; revision: number; navigation: number; x: number; y: number }
+  | { kind: "scroll"; revision: number; navigation: number; x: number; y: number; dy: number }
+  | { kind: "key"; revision: number; navigation: number; key: string }
+  | { kind: "select"; revision: number; navigation: number; value: string }
+  | { kind: "text"; revision: number; navigation: number; text: string };
 export type ScreenStreamEvent = { kind: "frame"; sequence: number; dataUrl: string } | { kind: "error"; message: string };
 /** A tool that live Android video needs. */
 export type ScreenTool = "adb" | "scrcpy" | "ffmpeg";

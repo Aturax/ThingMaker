@@ -15,7 +15,7 @@
 //! What a provider keeps on its own side is not touched: there is no request
 //! for that, so the interface says so beside the Temporary switch.
 
-use std::{path::{Path, PathBuf}, sync::LazyLock};
+use std::{path::{Path, PathBuf}, sync::{LazyLock, Mutex}};
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -62,6 +62,10 @@ fn now_ms() -> u64 {
 pub fn quick_chats_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("quick-chats")
 }
+
+/// Held while the list is read, changed and written back, so a chat made or
+/// changed while the start-up clean-up runs is not lost.
+static LIST_LOCK: Mutex<()> = Mutex::new(());
 
 fn read_list(state: &AppState) -> CommandResult<Vec<QuickChat>> {
     Ok(state.with_storage(|s| s.setting_get::<Vec<QuickChat>>(QUICK_CHATS_KEY, GLOBAL_SCOPE)).map_err(storage_error)?.unwrap_or_default())
@@ -112,6 +116,7 @@ pub fn quick_chat_create(temporary: Option<bool>, state: State<'_, AppState>) ->
     let temporary = temporary.unwrap_or(false);
     let created_at = now_ms();
     let chat = QuickChat { workspace_id: workspace.id.clone(), temporary, created_at, temporary_since: temporary.then_some(created_at), deleting: false };
+    let _guard = LIST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut list = read_list(&state)?;
     list.push(chat.clone());
     write_list(&state, &list)?;
@@ -122,6 +127,7 @@ pub fn quick_chat_create(temporary: Option<bool>, state: State<'_, AppState>) ->
 /// Marks a quick chat temporary (deleted when ThingMaker quits) or not.
 #[tauri::command]
 pub fn quick_chat_set_temporary(workspace_id: String, temporary: bool, state: State<'_, AppState>) -> CommandResult<QuickChat> {
+    let _guard = LIST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut list = read_list(&state)?;
     let chat = list.iter_mut().find(|chat| chat.workspace_id == workspace_id).ok_or_else(|| DesktopError::not_ready("that quick chat is gone"))?;
     chat.temporary = temporary;
@@ -144,12 +150,14 @@ pub(crate) async fn delete(state: &AppState, workspace_id: &str) -> CommandResul
         return Err(DesktopError::unsupported("only quick chats can be deleted this way"));
     }
     if let Some(record) = state.with_storage(|s| s.workspace_get(workspace_id)).map_err(storage_error)? {
-        let root = PathBuf::from(&record.canonical_root);
+        let stored = PathBuf::from(&record.canonical_root);
         let base = quick_chats_dir(&state.data_dir);
         let base = dunce::canonicalize(&base).unwrap_or(base);
-        // Never anything outside ThingMaker's own quick-chat folders.
-        if !root.starts_with(&base) || root == base {
-            return Err(DesktopError::unsupported("that workspace is not a quick chat's folder"));
+        let root = chat_folder(&stored, &base)?;
+        // A project opened from inside the chat's folder would go with it.
+        let workspaces = state.with_storage(|s| s.workspace_list()).map_err(storage_error)?;
+        if workspaces.iter().any(|w| w.id != workspace_id && same_or_inside(Path::new(&w.canonical_root), &root)) {
+            return Err(DesktopError::conflict("A project inside this chat's folder is open in ThingMaker. Remove that project first."));
         }
 
         for id in state.actors_under(&root) {
@@ -169,21 +177,68 @@ pub(crate) async fn delete(state: &AppState, workspace_id: &str) -> CommandResul
             let home = local_home(&state.data_dir);
             super::wipe::wipe_files(&root, &[home.join("claude")], &[home.join("codex")], &local_ids, &local_ids);
         }
+        // Gemini keeps one database per conversation; extra accounts link to
+        // the same folder.
+        if let Some(home) = state.home.as_deref() {
+            let gemini_ids: Vec<String> = state
+                .with_storage(|s| s.session_list(workspace_id))
+                .map_err(storage_error)?
+                .into_iter()
+                .filter(|session| session.provider == Provider::Gemini && super::wipe::safe_session_id(&session.agent_session_id))
+                .map(|session| session.agent_session_id)
+                .collect();
+            for id in gemini_ids {
+                let path = thingmaker_supervisor::agents::gemini::launch::conversation_path(home, &id);
+                if let Err(error) = std::fs::remove_file(&path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(%error, "could not remove a quick chat's Gemini conversation");
+                }
+            }
+        }
         let report = super::wipe::wipe_workspace(state, workspace_id).await?;
         if !report.problems.is_empty() {
             tracing::warn!(workspace = %workspace_id, problems = ?report.problems, "quick chat deleted with problems");
         }
-        state.with_storage(|s| s.workspace_delete(workspace_id)).map_err(storage_error)?;
+        // The folder first: if it can't go, the chat stays listed and the
+        // next start tries again.
         if let Err(error) = std::fs::remove_dir_all(&root)
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            tracing::warn!(%error, "could not remove a quick chat's folder");
+            return Err(DesktopError::io(format!("could not remove the chat's folder: {error}")));
         }
+        state.with_storage(|s| s.workspace_delete(workspace_id)).map_err(storage_error)?;
     }
+    let _guard = LIST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let list: Vec<QuickChat> = read_list(state)?.into_iter().filter(|chat| chat.workspace_id != workspace_id).collect();
     write_list(state, &list)?;
     tracing::info!(workspace = %workspace_id, "quick chat deleted");
     Ok(())
+}
+
+/// The folder a quick chat may delete: a real folder (not a link) directly
+/// inside ThingMaker's quick-chat folder. `base` is already canonical.
+fn chat_folder(stored: &Path, base: &Path) -> CommandResult<PathBuf> {
+    let refuse = || DesktopError::unsupported("that workspace is not a quick chat's folder");
+    if stored.components().any(|part| matches!(part, std::path::Component::ParentDir | std::path::Component::CurDir)) {
+        return Err(refuse());
+    }
+    let root = match std::fs::symlink_metadata(stored) {
+        Ok(meta) if meta.file_type().is_symlink() => return Err(refuse()),
+        Ok(_) => dunce::canonicalize(stored).map_err(|_| refuse())?,
+        // Already gone: only its transcripts remain, found by the stored path.
+        Err(_) => dunce::simplified(stored).to_path_buf(),
+    };
+    if root.parent() != Some(base) {
+        return Err(refuse());
+    }
+    Ok(root)
+}
+
+/// Whether `path` is `root` or inside it, comparing Windows paths with and
+/// without their `\\?\` prefix alike.
+fn same_or_inside(path: &Path, root: &Path) -> bool {
+    dunce::simplified(path).starts_with(dunce::simplified(root))
 }
 
 /// Stops one session the way the Stop button does.
@@ -260,5 +315,51 @@ mod tests {
         write_list(&state, &[QuickChat { workspace_id: record.id.clone(), temporary: true, created_at: 1, temporary_since: Some(1), deleting: false }]).unwrap();
         assert!(delete(&state, &record.id).await.is_err());
         assert!(project.exists());
+    }
+
+    #[test]
+    fn only_a_real_folder_directly_inside_the_quick_chat_folder_is_deletable() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap().join("quick-chats");
+        std::fs::create_dir_all(base.join("chat1/inner")).unwrap();
+        let outside = base.parent().unwrap().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        assert_eq!(chat_folder(&base.join("chat1"), &base).unwrap(), base.join("chat1"));
+        // The folder itself, a deeper folder, `..` tricks and anything outside are refused.
+        for path in [base.clone(), base.join("chat1/inner"), base.join("chat1/../.."), base.join("chat1/.."), outside.clone()] {
+            assert!(chat_folder(&path, &base).is_err(), "{}", path.display());
+        }
+        // A link in the chat folder's place is refused, and its target kept.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, base.join("linked")).unwrap();
+            assert!(chat_folder(&base.join("linked"), &base).is_err());
+            assert!(outside.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_project_open_inside_a_chat_folder_stops_the_chat_being_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppState::initialize(temp.path(), None).unwrap();
+        let folder = quick_chats_dir(&state.data_dir).join("abc123");
+        std::fs::create_dir_all(folder.join("cloned")).unwrap();
+        let chat = state.with_storage(|s| s.workspace_upsert(&dunce::canonicalize(&folder).unwrap().to_string_lossy(), "chat", "h1")).unwrap();
+        let inner = dunce::canonicalize(folder.join("cloned")).unwrap();
+        state.with_storage(|s| s.workspace_upsert(&inner.to_string_lossy(), "cloned", "h2")).unwrap();
+        write_list(&state, &[QuickChat { workspace_id: chat.id.clone(), temporary: true, created_at: 1, temporary_since: Some(1), deleting: false }]).unwrap();
+        assert!(delete(&state, &chat.id).await.is_err());
+        assert!(inner.exists());
+        assert_eq!(read_list(&state).unwrap().len(), 1, "the chat stays listed");
+    }
+
+    #[test]
+    fn session_ids_that_could_name_a_shared_folder_are_never_used() {
+        for id in ["", ".", "..", "../x", "a/b", "a\\b", "id with space"] {
+            assert!(!super::super::wipe::safe_session_id(id), "{id:?}");
+        }
+        for id in ["0433d00e-911d-4cfe-ba39-4529764b03e7", "019a2b3c_def"] {
+            assert!(super::super::wipe::safe_session_id(id));
+        }
     }
 }

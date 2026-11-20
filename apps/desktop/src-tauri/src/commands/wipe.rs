@@ -69,6 +69,22 @@ pub(crate) async fn wipe_workspace(state: &AppState, workspace_id: &str) -> Comm
         .into_iter()
         .filter(|session| matches!(session.origin, SessionOrigin::Desktop | SessionOrigin::Side | SessionOrigin::Fork))
         .filter(|session| matches!(session.provider, Provider::Claude | Provider::Codex))
+        .filter(|session| safe_session_id(&session.agent_session_id))
+        .collect();
+    // A conversation another project also records stays: deleting it by id
+    // would take that project's copy too.
+    let others: Vec<String> = state
+        .with_storage(|s| s.workspace_list())
+        .map_err(storage_error)?
+        .into_iter()
+        .map(|workspace| workspace.id)
+        .filter(|id| id != workspace_id)
+        .collect();
+    let sessions: Vec<_> = sessions
+        .into_iter()
+        .filter(|session| {
+            !others.iter().any(|other| state.with_storage(|s| s.session_by_agent_id(other, &session.agent_session_id)).ok().flatten().is_some())
+        })
         .collect();
 
     // Nothing is deleted under a running agent: it would write the file back.
@@ -159,9 +175,18 @@ pub(crate) struct Removed {
     problems: Vec<String>,
 }
 
+/// A session id that names one session's files and nothing else: no empty,
+/// `.`, `..` or path-like ids, which would reach a whole shared folder.
+pub(crate) fn safe_session_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Removes the sessions' files from the providers' folders. Account folders
 /// link into the person's own, so each real path is removed once.
 pub(crate) fn wipe_files(root: &Path, claude_dirs: &[PathBuf], codex_homes: &[PathBuf], claude_ids: &[String], codex_ids: &[String]) -> Removed {
+    let claude_ids: Vec<String> = claude_ids.iter().filter(|id| safe_session_id(id)).cloned().collect();
+    let codex_ids: Vec<String> = codex_ids.iter().filter(|id| safe_session_id(id)).cloned().collect();
+    let (claude_ids, codex_ids) = (&claude_ids[..], &codex_ids[..]);
     let mut removed = Removed::default();
     let mut done: HashSet<PathBuf> = HashSet::new();
 

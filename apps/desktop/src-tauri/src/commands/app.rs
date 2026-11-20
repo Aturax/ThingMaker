@@ -159,6 +159,11 @@ pub fn show_main_window(app: &AppHandle) {
 
 /// Stops every attached helper within a bounded budget, then exits.
 pub async fn quit_and_stop(app: AppHandle, stop_sessions: bool) {
+    // Pressing Quit twice must not run two quits side by side.
+    static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if QUITTING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     // Temporary quick chats go with the app, whichever way it quits; any
     // left by a crash are deleted at the next start.
     if let Some(state) = app.try_state::<AppState>() {

@@ -115,7 +115,7 @@ Kit is removed; Claude Code and Codex run end to end and either can orchestrate 
     Session rows retain the resource selection across resumes and forks, including
     whether the user chose inheritance. Older Claude and Codex rows without a
     recorded policy restore a matching Big Thing team's selection when available.
-    Otherwise those sessions reopen with an empty selection. To use other skills
+    Otherwise those sessions inherit the provider's configuration, as before. To use other skills
     or connections, open a new session with the desired team preset.
     Local forks carry the original Ollama model and harness into the destination
     workspace. Gemini retains inherited resources.

@@ -25,6 +25,10 @@ let enabled = process.env.THINGMAKER_WEB_ENABLED === "1";
 let browser, launching, context, page;
 
 let revision = 0;
+// Moves when the page itself changes under the person: another page or site,
+// a closed tab, a lent tab, or an agent action. Every kind of input must
+// match it, so typing never lands on a page the person was not looking at.
+let navigation = 0;
 let lastDocumentState;
 // Count the changes that move what a screenshot click would hit: elements
 // added or removed (a dialog, new controls), scrolling and resizing. Text,
@@ -95,9 +99,9 @@ async function open(target) {
     await context.addInitScript(trackDocument);
     context.on("page", next => {
       page = next;
-      revision++;
-      next.on("framenavigated", (navigated) => { if (page === next && navigated === next.mainFrame()) revision++; });
-      next.on("close", () => { if (page === next) page = context.pages().at(-1); revision++; });
+      revision++; navigation++;
+      next.on("framenavigated", (navigated) => { if (page === next && navigated === next.mainFrame()) { revision++; navigation++; } });
+      next.on("close", () => { if (page === next) page = context.pages().at(-1); revision++; navigation++; });
     });
   }
   if (!page || page.isClosed()) page = await context.newPage();
@@ -259,7 +263,7 @@ async function browsePair() {
   return { ...await frame(), pairingCode:code, relayAddress:output.match(/localhost:\d+/)?.[0] || "localhost:19988" };
 }
 async function frame() {
-  if (chromeTab || chromeDetached) return { storeUrl, enabled, revision, activity:"", choices:[], image:null,
+  if (chromeTab || chromeDetached) return { storeUrl, enabled, revision, navigation, activity:"", choices:[], image:null,
     url:chromeTab?.url || "", chrome:chromeTab ? "connected" : "disconnected" };
   const visible = page && !page.isClosed();
   // Stamp before sampling: a change during capture must invalidate this frame.
@@ -269,7 +273,7 @@ async function frame() {
     const el = document.activeElement;
     return el instanceof HTMLSelectElement ? Array.from(el.options, opt => ({ label: opt.label, value: opt.value, selected: opt.selected })) : [];
   }) : [];
-  return { storeUrl, enabled, activity: "", revision: capturedRevision, url: visible ? page.url() : "", image, choices };
+  return { storeUrl, enabled, activity: "", revision: capturedRevision, navigation, url: visible ? page.url() : "", image, choices };
 }
 function makeServer() {
   const server = new McpServer({ name: "thingmaker-web", version: "1.0.0" });
@@ -342,7 +346,7 @@ function makeServer() {
     if (!page) throw Error("Open a page first");
     // The agent can change a form property without a DOM mutation. Invalidate
     // before dispatch so even a partially applied action invalidates stale input.
-    revision++;
+    revision++; navigation++;
     const element = page.getByRole(role, { name, exact: true });
     if (action === "click") await element.click();
     else if (action === "fill") await element.fill(value);
@@ -396,7 +400,7 @@ async function desktop(cmd) {
     await publicAddress(url.hostname);
     chromeTab = {...tab, origin:url.origin};
     chromeDetached = false;
-    revision++;
+    revision++; navigation++;
     return frame();
   }
   if (cmd.kind === "unshare") {
@@ -416,9 +420,13 @@ async function desktop(cmd) {
     else if (cmd.kind === "search") await open(searchUrl(cmd.query));
     else {
       if (!page) throw Error("Page changed. Try again on the current frame.");
+      // Any input must be for the page the person saw: after a navigation,
+      // typed text would otherwise land on another page or site.
+      if (cmd.navigation !== navigation) throw Error("Page changed. Try again on the current frame.");
       // A click lands where the frame showed something, so it must be the
       // frame the person saw. Keys, text and a menu choice go to what has
-      // focus, and typing changes the page itself, so they are not refused.
+      // focus, and typing changes the page itself, so small changes to the
+      // page don't refuse them.
       if ((cmd.kind === "click" || cmd.kind === "scroll") && cmd.revision !== await currentRevision()) throw Error("Page changed. Try again on the current frame.");
       if (cmd.kind === "click") await page.mouse.click(cmd.x, cmd.y);
       else if (cmd.kind === "scroll") { await page.mouse.move(cmd.x, cmd.y); await page.mouse.wheel(0,cmd.dy); }
