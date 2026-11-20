@@ -456,6 +456,11 @@ export type EnqueueOutcome = { outcome: "queued"; position: number } | { outcome
 
 export type TrustState = "untrusted" | "inspect_only" | "trusted_local";
 
+/** A conversation that belongs to no project: a workspace in an empty
+ *  folder ThingMaker made for it. A temporary one is deleted when ThingMaker
+ *  quits; `deleting` marks one left by the last run, waiting to go. */
+export type QuickChat = { workspaceId: string; temporary: boolean; createdAt: number; temporarySince?: number; deleting?: boolean };
+
 export type WorkspaceRecord = {
   id: string;
   environmentId: string;
@@ -1746,7 +1751,7 @@ export type ScreenDevice = { id: string; name: string; platform: "android" | "io
 export type WebFrame = {
   storeUrl?: string | null; chrome?: "connected" | "disconnected"; pairingCode?: string; relayAddress?: string;
   lentTabs?: {key:string; title:string; url:string}[];
-  enabled: boolean; activity: string; revision: number; url: string; image: string | null;
+  enabled: boolean; activity: string; revision: number; navigation: number; url: string; image: string | null;
   choices: { label: string; value: string; selected: boolean }[];
 };
 export type WebAction =
@@ -1754,11 +1759,11 @@ export type WebAction =
   | { kind: "attachBrowse"; key:string; url:string }
   | { kind: "search"; query: string }
   | { kind: "open"; url: string }
-  | { kind: "click"; revision: number; x: number; y: number }
-  | { kind: "scroll"; revision: number; x: number; y: number; dy: number }
-  | { kind: "key"; revision: number; key: string }
-  | { kind: "select"; revision: number; value: string }
-  | { kind: "text"; revision: number; text: string };
+  | { kind: "click"; revision: number; navigation: number; x: number; y: number }
+  | { kind: "scroll"; revision: number; navigation: number; x: number; y: number; dy: number }
+  | { kind: "key"; revision: number; navigation: number; key: string }
+  | { kind: "select"; revision: number; navigation: number; value: string }
+  | { kind: "text"; revision: number; navigation: number; text: string };
 export type ScreenStreamEvent = { kind: "frame"; sequence: number; dataUrl: string } | { kind: "error"; message: string };
 /** A tool that live Android video needs. */
 export type ScreenTool = "adb" | "scrcpy" | "ffmpeg";
@@ -2004,6 +2009,10 @@ export const COMMANDS = {
   localImage: "local_image",
   workspaceRemove: "workspace_remove",
   workspaceWipeSessions: "workspace_wipe_sessions",
+  quickChatList: "quick_chat_list",
+  quickChatCreate: "quick_chat_create",
+  quickChatSetTemporary: "quick_chat_set_temporary",
+  quickChatDelete: "quick_chat_delete",
   workspaceRenameFolder: "workspace_rename_folder",
   attachmentPick: "attachment_pick",
   attachmentAddPaths: "attachment_add_paths",

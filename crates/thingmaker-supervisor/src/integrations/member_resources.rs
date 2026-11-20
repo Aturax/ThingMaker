@@ -7,6 +7,8 @@ use serde_json::{Map, Value, json};
 
 use crate::{DesktopError, storage::content_hash};
 
+#[cfg(windows)]
+mod windows_stdio;
 mod skill_dependencies;
 pub use skill_dependencies::McpDependency;
 
@@ -404,6 +406,7 @@ pub struct ResolvedResources {
 }
 
 pub struct SelectedSkill {
+    staged_revision: Option<blake3::Hash>,
     pub path: PathBuf,
     pub runtime_name: String,
     pub bridge: bool,
@@ -442,6 +445,12 @@ pub fn apply_to_launch(mut resources: ResolvedResources, launch: &mut crate::age
                 return Err(DesktopError::io("The skill directory contains the local session folder"));
             }
             copy_skill_files(source, &directory).map_err(|e| DesktopError::io(format!("Cannot stage {}: {e}", skill.name)))?;
+            if let Some(expected) = skill.staged_revision {
+                let staged = skill_directory_hash(&directory).map_err(|e| DesktopError::io(e.to_string()))?;
+                if staged != expected {
+                    return Err(DesktopError::conflict(format!("{} changed while its files were being staged. Retry the launch.", skill.name)));
+                }
+            }
             skill.path = directory.join("SKILL.md").canonicalize().map_err(|e| DesktopError::io(e.to_string()))?;
             let manifest = plugin.join(".claude-plugin");
             std::fs::create_dir(&manifest).and_then(|_| std::fs::write(manifest.join("plugin.json"), json!({"name":plugin_name,"version":"1.0.0"}).to_string())).map_err(|e| DesktopError::io(e.to_string()))?;
@@ -477,6 +486,38 @@ pub fn apply_to_launch(mut resources: ResolvedResources, launch: &mut crate::age
         }
         _ => Err(DesktopError::unsupported("This harness does not support member resources")),
     }
+}
+
+/// Hash the exact tree a local worker receives. Sorting and framing the entries
+/// makes the digest independent of filesystem enumeration order.
+fn skill_directory_hash(directory: &Path) -> std::io::Result<blake3::Hash> {
+    let mut entries = std::fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    let mut tree = blake3::Hasher::new();
+    for entry in entries {
+        let name = entry.file_name();
+        let bytes = name.as_encoded_bytes();
+        tree.update(&(bytes.len() as u64).to_le_bytes()).update(bytes);
+        let kind = entry.file_type()?;
+        let digest = if kind.is_dir() {
+            tree.update(b"d");
+            skill_directory_hash(&entry.path())?
+        } else if kind.is_file() {
+            tree.update(b"f");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                tree.update(&entry.metadata()?.permissions().mode().to_le_bytes());
+            }
+            let mut contents = blake3::Hasher::new();
+            contents.update_reader(std::fs::File::open(entry.path())?)?;
+            contents.finalize()
+        } else {
+            return Err(std::io::Error::other(format!("unsupported linked or special file: {}", entry.path().display())));
+        };
+        tree.update(digest.as_bytes());
+    }
+    Ok(tree.finalize())
 }
 
 fn copy_skill_files(source: &Path, destination: &Path) -> std::io::Result<()> {
@@ -564,14 +605,20 @@ pub fn resolve(catalog: &ResourceCatalog, selection: &ResourceSelection, environ
             if !cfg!(windows) && kind == "mcp" && id == BUILTIN_WEB { continue; }
             let entry = catalog.entries.iter().find(|entry| entry.id == *id && entry.kind == kind && entry.available)
                 .ok_or_else(|| DesktopError::not_ready(format!("Selected resource {id} is missing or disabled. Edit this member's selection.")))?;
-            revisions.insert(id, &entry.revision);
+            revisions.insert(id, entry.revision.clone());
             if kind == "skill" {
                 let path = entry.skill_path.as_ref().and_then(|path| path.canonicalize().ok()).ok_or_else(|| DesktopError::not_ready("Selected skill file is no longer available"))?;
                 // A symlinked installation can expose the same physical skill
                 // through several origins; load it once, preferring the first selection.
                 if selected_paths.insert(path.clone()) {
                     skills.push(entry.runtime_name.clone());
-                    skill_sources.push(SelectedSkill { path, runtime_name: entry.runtime_name.clone(), bridge: entry.bridge_skill, name: entry.name.clone(), description: entry.description.clone() });
+                    let staged_revision = if catalog.local_only {
+                        let source = path.parent().ok_or_else(|| DesktopError::io("Missing skill directory"))?;
+                        let hash = skill_directory_hash(source).map_err(|e| DesktopError::io(format!("Cannot read {}: {e}", entry.name)))?;
+                        revisions.insert(id, format!("{}:{hash}", entry.revision));
+                        Some(hash)
+                    } else { None };
+                    skill_sources.push(SelectedSkill { staged_revision, path, runtime_name: entry.runtime_name.clone(), bridge: entry.bridge_skill, name: entry.name.clone(), description: entry.description.clone() });
                 }
             }
             else if entry.id != BUILTIN_WEB {
@@ -756,6 +803,33 @@ mod tests {
                 _ => unreachable!(),
             }
         }
+    }
+
+    #[test]
+    fn local_worker_revision_tracks_auxiliary_skill_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let directory = home.join(".claude/skills/helper");
+        write(&directory.join("SKILL.md"), "# Helper");
+        let found = catalog(home, &home.join(".claude"), None).unwrap().local_only();
+        let selection = ResourceSelection { skills: vec!["skill:user:helper".into()], mcps: vec![] };
+        let snapshot = || resolve(&found, &selection, &HashMap::new()).unwrap();
+        let original = snapshot().revision;
+        let script = directory.join("scripts/helper.py");
+        write(&script, "first");
+        let first = snapshot();
+        assert_ne!(original, first.revision);
+        write(&script, "other");
+        let changed = snapshot().revision;
+        assert_ne!(first.revision, changed);
+        let mut options = crate::agents::codex::CodexLaunchOptions::new(home, "codex");
+        options.local = true;
+        options.codex_home = Some(home.join("codex"));
+        assert!(apply_to_launch(first, &mut crate::agents::AgentLaunch::Codex(options)).is_err());
+        std::fs::rename(&script, directory.join("scripts/tool.py")).unwrap();
+        assert_ne!(changed, snapshot().revision);
+        std::fs::remove_dir_all(directory.join("scripts")).unwrap();
+        assert_eq!(original, snapshot().revision);
     }
 
     #[test]

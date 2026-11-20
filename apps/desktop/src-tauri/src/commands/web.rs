@@ -459,9 +459,9 @@ mod tests {
         {
             let mut session = web.lock().await;
             let frame = session.control(json!({"kind":"open","url":format!("{origin}/form")})).await.unwrap();
-            let revision = &frame["revision"];
-            session.control(json!({"kind":"key","key":"Tab","revision":revision})).await.unwrap();
-            session.control(json!({"kind":"text","text":draft,"revision":revision})).await.unwrap();
+            let (revision, navigation) = (&frame["revision"], &frame["navigation"]);
+            session.control(json!({"kind":"key","key":"Tab","revision":revision,"navigation":navigation})).await.unwrap();
+            session.control(json!({"kind":"text","text":draft,"revision":revision,"navigation":navigation})).await.unwrap();
         }
         let actor = SessionActor::open(config).await.unwrap();
         let mut events = actor.subscribe();

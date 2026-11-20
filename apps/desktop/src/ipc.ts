@@ -162,6 +162,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 }
 
 export type OpenRequest = {
+  forkSource?: { workspaceId: string; agentSessionId: string };
   resources?: MemberResourceSelection;
   workspaceId: string;
   mode: { mode: "new" } | { mode: "resume"; session_id: string } | { mode: "fork"; session_id: string };
@@ -304,6 +305,11 @@ export const api = {
   runtimeEnvRemove: (name: string) => call<string[]>(COMMANDS.runtimeEnvRemove, { name }),
   workspaceRemove: (workspaceId: string) => call<void>(COMMANDS.workspaceRemove, { workspaceId }),
   workspaceWipeSessions: (workspaceId: string) => call<WipeReport>(COMMANDS.workspaceWipeSessions, { workspaceId }),
+  quickChatList: () => call<import("@thingmaker/contracts").QuickChat[]>(COMMANDS.quickChatList),
+  quickChatCreate: (temporary = false) =>
+    call<{ chat: import("@thingmaker/contracts").QuickChat; workspace: WorkspaceRecord }>(COMMANDS.quickChatCreate, { temporary }),
+  quickChatSetTemporary: (workspaceId: string, temporary: boolean) => call<import("@thingmaker/contracts").QuickChat>(COMMANDS.quickChatSetTemporary, { workspaceId, temporary }),
+  quickChatDelete: (workspaceId: string) => call<void>(COMMANDS.quickChatDelete, { workspaceId }),
   workspaceRenameFolder: (workspaceId: string, newName: string) => call<RenameReport>(COMMANDS.workspaceRenameFolder, { workspaceId, newName }),
   workspaceImage: (workspaceId: string, relative: string) => call<WorkspaceImage>(COMMANDS.workspaceImage, { workspaceId, relative }),
   generatedImage: (path: string) => call<WorkspaceImage>(COMMANDS.generatedImage, { path }),

@@ -30,6 +30,7 @@ import type {
   TrustState,
   WorkspaceInspection,
   WorkspaceRecord,
+  QuickChat,
   UsageSnapshot,
   GoalEdit,
   MilestoneEdit,
@@ -195,6 +196,8 @@ type State = {
   providers: ProviderInfo[] | null;
   profiles: ProfileInfo[];
   workspaces: WorkspaceRecord[];
+  /** Conversations that belong to no project (see commands/quick.rs). */
+  quickChats: QuickChat[];
   inspections: Record<string, WorkspaceInspection>;
   /**
    * What each provider's account last said about itself, in one shape
@@ -350,6 +353,13 @@ type State = {
   announce: (text: string) => void;
   toggleSidebar: () => void;
   removeWorkspace: (workspaceId: string) => Promise<void>;
+  loadQuickChats: () => Promise<void>;
+  /** A new quick chat, opened on its start page. */
+  newQuickChat: () => Promise<void>;
+  /** Makes a quick chat temporary (deleted when ThingMaker quits), or not. */
+  setQuickChatTemporary: (workspaceId: string, temporary: boolean) => Promise<void>;
+  /** Deletes a quick chat for good, after asking unless `confirmed`. */
+  deleteQuickChat: (workspaceId: string, confirmed?: boolean) => Promise<boolean>;
   /** Deletes for good every Claude and Codex session ThingMaker ran in a project, from this computer. */
   wipeSessions: (workspaceId: string) => Promise<WipeReport | null>;
   /** Renames the project's folder on disk and everything that names it; null on failure (the error is shown). */
@@ -1009,6 +1019,7 @@ export const useStore = create<State>((set, get) => ({
   providerUpdate: { running: null, results: {} },
   profiles: [],
   workspaces: [],
+  quickChats: [],
   inspections: {},
   usage: {},
   quotas: {},
@@ -1116,6 +1127,7 @@ export const useStore = create<State>((set, get) => ({
       readUsage();
       setInterval(readUsage, 5 * 60_000);
       void get().loadTeamPresets();
+      void get().loadQuickChats();
       void listen<JobView>(JOB_EVENT, (event) => get().noteJob(event.payload));
       void listen<UltraReview>(ULTRA_REVIEW_EVENT, (event) => get().noteUltraReview(event.payload));
       void listen<BigThingEvent>(BIGTHING_EVENT, (event) => get().noteBigThing(event.payload));
@@ -1137,7 +1149,10 @@ export const useStore = create<State>((set, get) => ({
         // anyone who had projects before the guide existed never sees it.
         const setup = IS_REMOTE ? null : readSetup();
         if (!IS_REMOTE && !setup && workspaces.length > 0) writeSetup({ finished: true });
-        const first = workspaces[0];
+        // Never open on a temporary chat from the last run: it is being deleted.
+        await get().loadQuickChats();
+        const leaving = new Set(get().quickChats.filter((chat) => chat.deleting).map((chat) => chat.workspaceId));
+        const first = workspaces.find((workspace) => !leaving.has(workspace.id));
         if (first && !(setup && !setup.finished)) {
           await get().selectWorkspace(first.id);
         }
@@ -2238,6 +2253,75 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
+  async loadQuickChats() {
+    try {
+      const list = await api.quickChatList();
+      set({ quickChats: Array.isArray(list) ? list : [] });
+    } catch (error) {
+      set({ error: asError(error) });
+    }
+  },
+
+  async newQuickChat() {
+    try {
+      const { chat, workspace } = await api.quickChatCreate(false);
+      set({ quickChats: [...get().quickChats.filter((entry) => entry.workspaceId !== chat.workspaceId), chat], workspaces: await api.workspaceList() });
+      await get().selectWorkspace(workspace.id);
+    } catch (error) {
+      set({ error: asError(error) });
+    }
+  },
+
+  async setQuickChatTemporary(workspaceId, temporary) {
+    try {
+      const chat = await api.quickChatSetTemporary(workspaceId, temporary);
+      set({ quickChats: get().quickChats.map((entry) => (entry.workspaceId === workspaceId ? chat : entry)) });
+    } catch (error) {
+      set({ error: asError(error) });
+    }
+  },
+
+  async deleteQuickChat(workspaceId, confirmed = false) {
+    if (!confirmed) {
+      const ok = await api
+        .confirmDialog({
+          title: t("Delete this chat?"),
+          message: t("The conversation and its folder are deleted from this computer. This can't be undone."),
+          okLabel: t("Delete"),
+          cancelLabel: t("Cancel"),
+          warning: true,
+        })
+        .catch(() => false);
+      if (!ok) return false;
+    }
+    try {
+      await api.quickChatDelete(workspaceId);
+    } catch (error) {
+      set({ error: asError(error) });
+      return false;
+    }
+    const view = get().view;
+    const sessions = Object.fromEntries(Object.entries(get().sessions).filter(([, session]) => session.workspaceId !== workspaceId));
+    const leaving = (view.kind === "workspace" && view.workspaceId === workspaceId) || (view.kind === "session" && !sessions[view.sessionId]);
+    const strip = <T>(record: Record<string, T>) => {
+      const next = { ...record };
+      delete next[workspaceId];
+      return next;
+    };
+    set({
+      quickChats: get().quickChats.filter((entry) => entry.workspaceId !== workspaceId),
+      workspaces: get().workspaces.filter((w) => w.id !== workspaceId),
+      sessions,
+      sessionOrder: get().sessionOrder.filter((id) => !!sessions[id]),
+      inspections: strip(get().inspections),
+      records: strip(get().records),
+      outbox: strip(get().outbox),
+      contextBundles: strip(get().contextBundles),
+      ...(leaving ? { view: { kind: "welcome" } as View } : {}),
+    });
+    return true;
+  },
+
   async removeWorkspace(workspaceId) {
     try {
       await api.workspaceRemove(workspaceId);
@@ -2728,7 +2812,8 @@ export const useStore = create<State>((set, get) => ({
     // The copy works the way the original does: its model, effort and team.
     const options = live ? asConfigOptions(live.snapshot.configOptions) : [];
     const chosen = (option: { currentValue?: unknown } | undefined) => (typeof option?.currentValue === "string" && option.currentValue !== "default" ? option.currentValue : undefined);
-    const model = chosen(options.find((option) => option.configId === "model"));
+    const localSetup = provider === "local" ? live?.localSetup : undefined;
+    const model = localSetup?.model ?? chosen(options.find((option) => option.configId === "model"));
     const effort = chosen(options.find((option) => isEffortOption(option.configId)));
     const team = live ? get().teams[live.handle.id] : undefined;
     const cards = live?.projection.cards;
@@ -2748,7 +2833,7 @@ export const useStore = create<State>((set, get) => ({
         set({ workspaces: await api.workspaceList(), inspections: { ...get().inspections, [inspection.record.id]: inspection } });
         target = inspection.record.id;
       }
-      const launch = { workspaceId: target, provider, ...(model ? { model } : {}), ...(effort ? { reasoningEffort: effort } : {}), ...(team ? { combo: team } : {}), ...(side && live ? { sideOf: live.handle.id } : {}) };
+      const launch = { workspaceId: target, forkSource: { workspaceId, agentSessionId }, provider, ...(localSetup?.resources ? { resources: localSetup.resources } : {}), ...(model ? { model } : {}), ...(effort ? { reasoningEffort: effort } : {}), ...(team ? { combo: team } : {}), ...(side && live ? { sideOf: live.handle.id } : {}) };
       const opened = copies
         ? await api.sessionOpen({ ...launch, mode: { mode: "fork", session_id: agentSessionId }, ...(provider === "claude" && point?.at ? { forkAt: point.at } : {}) })
         : await api.sessionOpen({ ...launch, mode: { mode: "new" } });

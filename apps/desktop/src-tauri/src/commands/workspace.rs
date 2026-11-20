@@ -74,7 +74,7 @@ fn summarize_mcp(path: &Path) -> (Vec<String>, bool) {
     (servers, executable)
 }
 
-fn inspect_sources(root: &Path) -> (Vec<ConfigSource>, String) {
+pub(crate) fn inspect_sources(root: &Path) -> (Vec<ConfigSource>, String) {
     let mut hasher = blake3::Hasher::new();
     let mut sources = Vec::new();
     // What an agent executes or obeys when it starts in this root: MCP

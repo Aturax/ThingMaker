@@ -90,19 +90,19 @@ export function WebView({ handle, standalone = false }: { handle: SessionHandle;
         <p className="small" dir="auto">{frame.url || frame.activity || t("Waiting for a web page")}</p>
         {frame.image && <img className="web-frame" src={"data:image/jpeg;base64," + frame.image} alt={t("Shared browser page")}
           tabIndex={0}
-          onClick={event => { event.currentTarget.focus(); void request({ kind: "click", revision: frame.revision, ...point(event) }); }}
-          onWheel={event => { if (!pending.current) void request({ kind: "scroll", revision: frame.revision, ...point(event), dy: event.deltaY }); }}
-          onPaste={event => { event.preventDefault(); void request({ kind: "text", revision: frame.revision, text: event.clipboardData.getData("text") }); }}
+          onClick={event => { event.currentTarget.focus(); void request({ kind: "click", revision: frame.revision, navigation: frame.navigation, ...point(event) }); }}
+          onWheel={event => { if (!pending.current) void request({ kind: "scroll", revision: frame.revision, navigation: frame.navigation, ...point(event), dy: event.deltaY }); }}
+          onPaste={event => { event.preventDefault(); void request({ kind: "text", revision: frame.revision, navigation: frame.navigation, text: event.clipboardData.getData("text") }); }}
           onKeyDown={event => {
             if (event.nativeEvent.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
             if (event.key === "Escape") { event.currentTarget.blur(); return; }
             if (event.key.length === 1) {
-              event.preventDefault(); void request({ kind: "text", revision: frame.revision, text: event.key });
+              event.preventDefault(); void request({ kind: "text", revision: frame.revision, navigation: frame.navigation, text: event.key });
             } else if (["Enter","Backspace","Delete","Tab","ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Home","End","PageUp","PageDown"].includes(event.key)) {
-              event.preventDefault(); void request({ kind: "key", revision: frame.revision, key: (event.shiftKey ? "Shift+" : "") + event.key });
+              event.preventDefault(); void request({ kind: "key", revision: frame.revision, navigation: frame.navigation, key: (event.shiftKey ? "Shift+" : "") + event.key });
             }
           }} />}
-        {!!frame.choices.length && <select aria-label={t("Page options")} value={frame.choices.find(item => item.selected)?.value} onChange={event => void request({ kind: "select", revision: frame.revision, value: event.target.value })}>
+        {!!frame.choices.length && <select aria-label={t("Page options")} value={frame.choices.find(item => item.selected)?.value} onChange={event => void request({ kind: "select", revision: frame.revision, navigation: frame.navigation, value: event.target.value })}>
           {frame.choices.map((item,i) => <option value={item.value} key={i}>{item.label}</option>)}
         </select>}
       </>}

@@ -42,6 +42,7 @@ export function TopBar() {
 
   // The workspace whose git head the bar describes: the focused session's, or
   // the selected workspace.
+  const quickChats = useStore((s) => s.quickChats);
   const workspaceId = view.kind === "session" ? sessions[view.sessionId]?.workspaceId : view.kind === "workspace" ? view.workspaceId : undefined;
   const repo = workspaceId === undefined ? undefined : repoInfo[workspaceId];
 
@@ -52,17 +53,19 @@ export function TopBar() {
 
   let title = "ThingMaker";
   let subtitle: string | null = null;
+  // A quick chat's folder is an internal detail: it is named as a quick chat.
+  const quick = workspaceId !== undefined && quickChats.some((chat) => chat.workspaceId === workspaceId);
   if (view.kind === "session") {
     const session = sessions[view.sessionId];
     if (session) {
       title = sessionTitle(session, records[session.workspaceId]);
       const workspace = workspaces.find((w) => w.id === session.workspaceId);
-      subtitle = workspace ? basenameOf(workspace.displayPath) : null;
+      subtitle = quick ? t("Quick chat") : workspace ? basenameOf(workspace.displayPath) : null;
     }
   } else if (view.kind === "workspace") {
     const workspace = workspaces.find((w) => w.id === view.workspaceId);
-    title = workspace ? basenameOf(workspace.displayPath) : t("Workspace");
-    subtitle = workspace?.displayPath ?? null;
+    title = quick ? t("Quick chat") : workspace ? basenameOf(workspace.displayPath) : t("Workspace");
+    subtitle = quick ? null : (workspace?.displayPath ?? null);
   } else if (view.kind === "signin") title = t("Sign-in");
   else if (view.kind === "settings") title = t("Settings");
   else if (view.kind === "teams") title = t("Teams");

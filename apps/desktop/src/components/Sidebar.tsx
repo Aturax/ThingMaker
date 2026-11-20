@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { IS_REMOTE } from "../remote/mode";
 import { PhoneAppSettings } from "../remote/PhoneAppSettings";
-import type { Provider } from "@thingmaker/contracts";
+import type { Provider, QuickChat } from "@thingmaker/contracts";
 import { PROVIDERS, PROVIDER_LABELS } from "@thingmaker/contracts";
 import { useStore, sessionTitle, basenameOf as basename } from "../store";
 import { api } from "../ipc";
@@ -23,7 +23,9 @@ import {
   IconPinFilled,
   IconPlus,
   IconRefresh,
+  IconQuickChat,
   IconSidebar,
+  IconTemporaryChat,
   IconX,
 } from "./icons";
 
@@ -119,6 +121,7 @@ function SessionRow({
   /** How deep it is nested: under a session, a fork of a fork, … */
   depth?: number;
 }) {
+  const temporary = useStore((s) => s.quickChats.some((chat) => chat.workspaceId === row.workspaceId && chat.temporary));
   const view = useStore((s) => s.view);
   const selectSession = useStore((s) => s.selectSession);
   const openSession = useStore((s) => s.openSession);
@@ -201,6 +204,11 @@ function SessionRow({
         </span>
         <span className="session-label">
           <span className="sidebar-title">{row.label}</span>
+          {temporary && (
+            <span className="quick-temporary-mark" title={t("Temporary chat: deleted when ThingMaker quits")}>
+              <IconTemporaryChat size={13} />
+            </span>
+          )}
           {showProject && <span className="session-project">{row.project}</span>}
         </span>
       </button>
@@ -314,6 +322,7 @@ export function RowMenu({ row, at, onClose, onRename, parentLabel }: { row: Row;
   // The folder the session works in.
   const root = useStore((s) => s.workspaces.find((workspace) => workspace.id === row.workspaceId)?.canonicalRoot);
   const setError = useStore((s) => s.setError);
+  const quick = useStore((s) => s.quickChats.find((chat) => chat.workspaceId === row.workspaceId));
 
   return (
     <div
@@ -339,7 +348,7 @@ export function RowMenu({ row, at, onClose, onRename, parentLabel }: { row: Row;
           {t("Fork")}
         </button>
       )}
-      {row.id && (
+      {row.id && !quick && (
         <button
           className="context-item"
           onClick={act(() => row.id && void forkSession({ workspaceId: row.workspaceId, agentSessionId: row.id, provider: row.provider, ...(row.liveId ? { key: row.liveId } : {}) }, undefined, { worktree: true }))}
@@ -384,6 +393,69 @@ export function RowMenu({ row, at, onClose, onRename, parentLabel }: { row: Row;
           {t("Copy session id")}
         </button>
       )}
+      {quick && !IS_REMOTE && <QuickChatItems onDone={onClose} quick={quick} />}
+    </div>
+  );
+}
+
+/** A quick chat's own items: Temporary, and Delete. */
+function QuickChatItems({ quick, onDone }: { quick: QuickChat; onDone: () => void }) {
+  const setQuickChatTemporary = useStore((s) => s.setQuickChatTemporary);
+  const deleteQuickChat = useStore((s) => s.deleteQuickChat);
+  return (
+    <>
+      <div className="context-sep" role="separator" />
+      <button
+        aria-checked={quick.temporary}
+        className="context-item"
+        onClick={() => {
+          onDone();
+          void setQuickChatTemporary(quick.workspaceId, !quick.temporary);
+        }}
+        role="menuitemcheckbox"
+        title={t("A temporary chat is deleted, with its folder, when ThingMaker quits.")}
+        type="button"
+      >
+        {quick.temporary ? t("Keep this chat") : t("Make temporary")}
+      </button>
+      <button
+        className="context-item context-danger"
+        onClick={() => {
+          onDone();
+          void deleteQuickChat(quick.workspaceId);
+        }}
+        role="menuitem"
+        type="button"
+      >
+        {t("Delete chat…")}
+      </button>
+    </>
+  );
+}
+
+/** The right-click menu of a quick chat that has no conversation yet. */
+function QuickChatMenu({ workspaceId, at, onClose }: { workspaceId: string; at: { x: number; y: number }; onClose: () => void }) {
+  const quick = useStore((s) => s.quickChats.find((chat) => chat.workspaceId === workspaceId));
+  const menu = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    menu.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const onDown = (event: MouseEvent) => {
+      if (!menu.current?.contains(event.target as Node)) onClose();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+  if (!quick) return null;
+  return (
+    <div className="context-menu" ref={menu} role="menu" style={{ left: Math.min(at.x, window.innerWidth - 200), top: Math.min(at.y, window.innerHeight - 100) }}>
+      <QuickChatItems onDone={onClose} quick={quick} />
     </div>
   );
 }
@@ -564,7 +636,11 @@ export function Sidebar() {
   const [projectMenu, setProjectMenu] = useState<{ id: string; name: string; live: number; at: { x: number; y: number } } | null>(null);
 
   /** Rows per workspace, so the pinned group can be assembled across them. */
-  const groups = workspaces.map((workspace) => {
+  const quickChats = useStore((s) => s.quickChats);
+  const newQuickChat = useStore((s) => s.newQuickChat);
+  const [quickMenu, setQuickMenu] = useState<{ workspaceId: string; at: { x: number; y: number } } | null>(null);
+  const quickById = new Map(quickChats.map((chat) => [chat.workspaceId, chat]));
+  const groups = workspaces.filter((workspace) => !quickById.get(workspace.id)?.deleting).map((workspace) => {
     const inspection = inspections[workspace.id];
     const trusted = inspection?.record.trustState === "trusted_local" && !inspection.trustStale;
     const project = basename(workspace.displayPath);
@@ -641,7 +717,12 @@ export function Sidebar() {
   });
 
   const allPinned = groups.flatMap((group) => group.pinnedRows);
-  const manyProjects = workspaces.length > 1;
+  // Quick chats are listed on their own, newest first, below the projects.
+  const projectGroups = groups.filter((group) => !quickById.has(group.workspace.id));
+  const quickGroups = groups
+    .filter((group) => quickById.has(group.workspace.id))
+    .sort((a, b) => (quickById.get(b.workspace.id)?.createdAt ?? 0) - (quickById.get(a.workspace.id)?.createdAt ?? 0));
+  const manyProjects = projectGroups.length > 1;
 
   return (
     <nav aria-label={t("Workspaces and sessions")} className="sidebar" style={IS_REMOTE ? undefined : { width }}>
@@ -650,12 +731,17 @@ export function Sidebar() {
         <button aria-label={t("Hide sidebar (⌘B)")} className="icon-button remote-hidden" onClick={toggleSidebar} title={t("Hide sidebar (⌘B)")} type="button">
           <IconSidebar />
         </button>
+        {!IS_REMOTE && (
+          <button aria-label={t("New quick chat")} className="icon-button" onClick={() => void newQuickChat()} title={t("New quick chat: a conversation outside any project")} type="button">
+            <IconQuickChat />
+          </button>
+        )}
         <span className="sidebar-top-spacer" data-tauri-drag-region />
         {!IS_REMOTE && <NavArrows />}
       </div>
 
       <div className={`sidebar-body ${scrolling ? "scrolling" : ""}`} onScroll={onScroll} ref={body}>
-        {workspaces.length === 0 && (
+        {projectGroups.length === 0 && (
           <button className="sidebar-empty" onClick={() => void addWorkspaceByPicker()} type="button">
             <IconFolder size={18} />
             <span>
@@ -700,7 +786,7 @@ export function Sidebar() {
           </section>
         )}
 
-        {workspaces.length > 0 && (
+        {projectGroups.length > 0 && (
           <div className="sidebar-section-head">
             <span>{t("Projects")}</span>
             <button aria-label={t("Add a project (⌘O)")} className="icon-button icon-button-xs remote-hidden" onClick={() => void addWorkspaceByPicker()} title={t("Add a project (⌘O)")} type="button">
@@ -709,7 +795,7 @@ export function Sidebar() {
           </div>
         )}
 
-        {groups.map(({ workspace, inspection, trusted, project, liveCount, unpinned, pinnedRows, archivedRows }) => {
+        {projectGroups.map(({ workspace, inspection, trusted, project, liveCount, unpinned, pinnedRows, archivedRows }) => {
           const selected = view.kind === "workspace" && view.workspaceId === workspace.id;
           const isCollapsed = collapsed[workspace.id] ?? false;
           return (
@@ -867,7 +953,67 @@ export function Sidebar() {
             </section>
           );
         })}
+
+        {quickGroups.length > 0 && (
+          <section className="ws-group quick-chats">
+            <div className="sidebar-section-head">
+              <span>{t("Quick Chats")}</span>
+              <button aria-label={t("New quick chat")} className="icon-button icon-button-xs remote-hidden" onClick={() => void newQuickChat()} title={t("New quick chat")} type="button">
+                <IconPlus size={14} />
+              </button>
+            </div>
+            <ul className="sidebar-sessions">
+              {quickGroups.map(({ workspace, unpinned, archivedRows }) => {
+                const top = [...unpinned, ...archivedRows].filter((row) => !row.parent);
+                if (top.length === 0) {
+                  // Not started yet: its start page.
+                  const selected = view.kind === "workspace" && view.workspaceId === workspace.id;
+                  const temporary = quickById.get(workspace.id)?.temporary;
+                  return (
+                    <li
+                      className="session-li"
+                      key={workspace.id}
+                      onContextMenu={(event) => {
+                        if (IS_REMOTE) return;
+                        event.preventDefault();
+                        setQuickMenu({ workspaceId: workspace.id, at: { x: event.clientX, y: event.clientY } });
+                      }}
+                    >
+                      <button aria-current={selected ? "page" : undefined} className={`session-row stored ${selected ? "selected" : ""}`} onClick={() => void selectWorkspace(workspace.id)} type="button">
+                        <span className="session-lead session-lead-stored">
+                          <IconQuickChat size={14} />
+                        </span>
+                        <span className="session-label">
+                          <span className="sidebar-title">{t("New chat")}</span>
+                          {temporary && (
+                            <span className="quick-temporary-mark" title={t("Temporary chat: deleted when ThingMaker quits")}>
+                              <IconTemporaryChat size={13} />
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                }
+                return top.map((row) => (
+                  <SessionRow
+                    key={`quick-${row.liveId ?? row.id}`}
+                    onMenu={(target, at) => setMenu({ row: target, at })}
+                    onRename={(title) => {
+                      setRenaming(null);
+                      if (title !== null && row.id) void renameSession(row.workspaceId, row.id, title);
+                    }}
+                    renaming={renaming === row.id}
+                    row={row}
+                  />
+                ));
+              })}
+            </ul>
+          </section>
+        )}
       </div>
+
+      {quickMenu && <QuickChatMenu at={quickMenu.at} onClose={() => setQuickMenu(null)} workspaceId={quickMenu.workspaceId} />}
 
       {menu && (
         <RowMenu

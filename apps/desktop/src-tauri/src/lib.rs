@@ -141,6 +141,14 @@ pub fn run() {
             // Big Thing runs in the host, whether or not a window is open.
             commands::bigthing::start(app.handle());
             commands::ultrareview::start(app.handle());
+            // Temporary quick chats a crash left behind.
+            commands::quick::mark_start();
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(state) = handle.try_state::<state::AppState>() {
+                    commands::quick::delete_temporary(&state, true).await;
+                }
+            });
             // Holds off idle sleep while anything above is working.
             keep_awake::start(app.handle());
             // Phone access through the Cloudflare relay; off until turned on in Settings.
@@ -230,6 +238,10 @@ pub fn run() {
             commands::workspace::reveal_path,
             commands::workspace::quick_look,
             commands::wipe::workspace_wipe_sessions,
+            commands::quick::quick_chat_list,
+            commands::quick::quick_chat_create,
+            commands::quick::quick_chat_set_temporary,
+            commands::quick::quick_chat_delete,
             commands::rename::workspace_rename_folder,
             remote::remote_status,
             remote::remote_set_enabled,
@@ -470,6 +482,13 @@ pub fn run() {
         .expect("error while building ThingMaker");
 
     app.run(|app, event| {
+        // Quitting from the app menu (⌘Q) goes through the same quit as the
+        // tray's, so temporary quick chats are deleted first. `app.exit` at
+        // its end comes back with a code and is let through.
+        if let RunEvent::ExitRequested { code: None, api, .. } = &event {
+            api.prevent_exit();
+            tauri::async_runtime::spawn(quit_and_stop(app.clone(), true));
+        }
         #[cfg(target_os = "macos")]
         if let RunEvent::Reopen { .. } = event {
             show_main_window(app);

@@ -281,3 +281,16 @@ export const IconUpdate = (p: IconProps) => (
     <path d="M12 7.5v8M8.5 12.5 12 16l3.5-3.5" />
   </Svg>
 );
+/** A new quick chat: a speech bubble with a plus. */
+export const IconQuickChat = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M20 11.5a7.5 7.5 0 0 1-11.2 6.5L4 19.2l1.2-4.4A7.5 7.5 0 1 1 20 11.5Z" />
+    <path d="M12 8.6v5.8M9.1 11.5h5.8" />
+  </Svg>
+);
+/** A temporary chat: the same bubble, dashed. */
+export const IconTemporaryChat = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M20 11.5a7.5 7.5 0 0 1-11.2 6.5L4 19.2l1.2-4.4A7.5 7.5 0 1 1 20 11.5Z" strokeDasharray="2.4 2.6" />
+  </Svg>
+);

@@ -112,7 +112,13 @@ Kit is removed; Claude Code and Codex run end to end and either can orchestrate 
     plugins are disabled in that worker. No skills/config/write or global
     config edit is used. Empty MCP confirmation forms on selected servers
     use the workspace's existing approval gate; data-entry forms are refused.
-    Gemini and Local Models retain inherited resources.
+    Session rows retain the resource selection across resumes and forks, including
+    whether the user chose inheritance. Older Claude and Codex rows without a
+    recorded policy restore a matching Big Thing team's selection when available.
+    Otherwise those sessions inherit the provider's configuration, as before. To use other skills
+    or connections, open a new session with the desired team preset.
+    Local forks carry the original Ollama model and harness into the destination
+    workspace. Gemini retains inherited resources.
     Account, policy, selected skill text and resolved MCP configuration
     changes prevent reuse of an old worker conversation; stale follow-ups
     ask for a new job. Running jobs keep their starting configuration.

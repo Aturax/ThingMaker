@@ -24,7 +24,7 @@ it("enables local web access, allows direct input in the shared page", async () 
   let enabled = false;
   vi.mocked(api.webControl).mockImplementation(async (_, action) => {
     if (action.kind === "enable") enabled = true;
-    return { enabled, url: "", image: null, revision: 0, activity: "", choices: [] };
+    return { enabled, url: "", image: null, revision: 0, navigation: 0, activity: "", choices: [] };
   });
   render(<OfficeScreen webHandle={handle}>Office scene</OfficeScreen>);
   for (const label of ["Web", "Allow web access for this local session"]) {
@@ -39,7 +39,7 @@ it("shows the pairing code, then reflects Chrome ownership on the next frame", a
   vi.mocked(api.webControl).mockImplementation(async (_, action) => {
     if(action.kind === "attachBrowse" && action.key === "catalog") connected = true;
     return {
-    enabled:true, url:"", image:null, revision:1, activity:"", choices:[],
+    enabled:true, url:"", image:null, revision:1, navigation:1, activity:"", choices:[],
     storeUrl:"https://chromewebstore.google.com/detail/browse/mfnicocicmmlkpjnaffgihfjhdgjkdjg",
     ...(connected ? {chrome:"connected" as const} : {}),
     ...(action.kind === "pair" ? {pairingCode:"ABCD-1234",relayAddress:"localhost:19988"} : {}),
