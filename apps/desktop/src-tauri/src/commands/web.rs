@@ -2,22 +2,23 @@ use super::CommandResult;
 use crate::state::AppState;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
-#[cfg(any(test, windows))]
-#[allow(unused_imports)] // Stdio and line reading are only used by the Windows runtime and its tests.
+#[cfg(any(test, windows, target_os = "macos"))]
+#[allow(unused_imports)] // Stdio and line reading are only used where the runtime ships, and by its tests.
 use std::{path::PathBuf, process::Stdio};
 use tauri::State;
 use thingmaker_supervisor::{DesktopError, SessionHandle};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use thingmaker_supervisor::security::EnvironmentProfile;
 #[allow(unused_imports)]
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines}, process::{Child, ChildStdin, ChildStdout, Command}, sync::Mutex};
 
 use thingmaker_supervisor::{
     agents::local::LocalKind,
+    integrations::member_resources::WEB_SUPPORTED,
     supervisor::{AgentLaunch, SessionActor, SessionActorConfig, SessionEvent},
 };
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod lazy;
 #[cfg(windows)]
 mod process_job;
@@ -37,7 +38,7 @@ impl Drop for WebSession {
 }
 
 struct Runtime {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     endpoint: (String, String),
     child: Child,
     input: ChildStdin,
@@ -59,36 +60,37 @@ fn reserve_browse_tab(key: &str) -> Result<Arc<()>, String> {
     Ok(lease)
 }
 
-#[cfg(windows)]
-pub(super) fn windows_runtime(state: &AppState) -> Result<PathBuf, String> {
+/// The private Node.js that ships in the web runtime.
+#[cfg(any(windows, target_os = "macos"))]
+const NODE: &str = if cfg!(windows) { "node.exe" } else { "node" };
+
+#[cfg(any(windows, target_os = "macos"))]
+pub(super) fn installed_runtime(state: &AppState) -> Result<PathBuf, String> {
     let installed = state.resource_dir.as_ref().map(|p| p.join("web-runtime"));
     #[cfg(debug_assertions)]
-    let installed = installed.filter(|p| p.join("node.exe").is_file()).or_else(|| Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist-web")));
+    let installed = installed.filter(|p| p.join(NODE).is_file()).or_else(|| Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist-web")));
     let root = installed.ok_or("The installed web runtime is missing")?;
     dunce::canonicalize(root).map_err(|_| "The web runtime is missing. Reinstall ThingMaker.".to_string())
 }
 
 impl WebSession {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     pub async fn launch(_: &AppState, _: bool) -> Result<(Connection, Value), String> {
-        Err("ThingMaker Web is available on Windows.".into())
+        Err("ThingMaker Web is available on Windows and macOS.".into())
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub async fn launch(state: &AppState, enabled: bool) -> Result<(Connection, Value), String> {
         let mut env_profile = EnvironmentProfile::trusted_local();
         if let Some(home) = &state.home { env_profile = env_profile.with_tool_paths(home); }
         let env = env_profile.resolve(std::env::vars());
+        let root = installed_runtime(state)?;
+        let mut command = Command::new(root.join(NODE));
+        command.arg(root.join("session.mjs")).current_dir(&root).env_clear().envs(env)
+            .env("THINGMAKER_BROWSE_BIN_DIR", state.data_dir.join("tools/browse"))
+            .env("THINGMAKER_WEB_MCP_DIR", &root)
+            .env("PLAYWRIGHT_BROWSERS_PATH", root.join("browsers"));
         #[cfg(windows)]
-        let mut command = {
-            let root = windows_runtime(state)?;
-            let mut cmd = Command::new(root.join("node.exe"));
-            cmd.arg(root.join("session.mjs")).current_dir(&root).env_clear().envs(env)
-                .env("THINGMAKER_BROWSE_BIN_DIR", state.data_dir.join("tools/browse"))
-                .env("THINGMAKER_WEB_MCP_DIR", &root)
-                .env("PLAYWRIGHT_BROWSERS_PATH", root.join("browsers"));
-            cmd
-        };
         command.creation_flags(0x08000000);
         #[cfg(test)]
         command.env("THINGMAKER_WEB_TEST_LOOPBACK", "1");
@@ -103,7 +105,7 @@ impl WebSession {
             .env("WEB_SCOUT_ENV_FILE", "none").env("WEB_SCOUT_LLM_PROVIDER", "none").env("WEB_SCOUT_BROWSER_PREWARM", "false")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).kill_on_drop(true);
         let session = Arc::new(Mutex::new(Self { command, runtime: None, listener: None, closed: false }));
-        let entry = lazy::listen(&session, &windows_runtime(state)?).await?;
+        let entry = lazy::listen(&session, &root).await?;
         Ok((session, entry))
     }
 
@@ -133,14 +135,18 @@ impl WebSession {
 }
 
 impl Runtime {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     async fn start(_: &mut Command) -> Result<Self, String> {
-        Err("ThingMaker Web is available on Windows.".into())
+        Err("ThingMaker Web is available on Windows and macOS.".into())
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     async fn start(command: &mut Command) -> Result<Self, String> {
         let mut child = command.spawn().map_err(|e| e.to_string())?;
+        // Windows needs a job to stop the runtime's descendants when the desktop
+        // exits. Elsewhere the runtime closes Chromium and exits once its input
+        // pipe closes, which a desktop exit or crash does.
+        #[cfg(windows)]
         process_job::track(&child)?;
         let input = child.stdin.take().ok_or("Missing web control pipe")?;
         let mut output = BufReader::new(child.stdout.take().ok_or("Missing web reply pipe")?).lines();
@@ -178,7 +184,7 @@ impl Runtime {
 }
 
 pub async fn prepare(state: &AppState, config: &mut SessionActorConfig) -> Option<Result<Connection, String>> {
-    if !cfg!(windows) { return None; }
+    if !WEB_SUPPORTED { return None; }
     // A local agent reaches the internet only with an explicit Web selection.
     let instructions = match &mut config.launch {
         AgentLaunch::Claude(options) if ((options.local.is_none() && options.resources.is_none()) || config.builtin_web)
@@ -274,6 +280,24 @@ mod tests {
         assert!(reserve_browse_tab(key).is_err());
         drop(pending);
         assert!(reserve_browse_tab(key).is_ok());
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[tokio::test]
+    #[ignore = "requires the staged web runtime"]
+    async fn the_panel_renders_a_page_in_the_bundled_chromium() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppState::initialize(temp.path(), None).unwrap();
+        let app = axum::Router::new().route("/", axum::routing::get(|| async { axum::response::Html("<h1>Rendered</h1>") }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let fixture = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (web, _) = WebSession::launch(&state, true).await.unwrap();
+        let frame = web.lock().await.control(json!({"kind":"open","url":origin})).await.unwrap();
+        assert_eq!(frame["url"], format!("{origin}/"));
+        assert!(frame["image"].is_string());
+        web.lock().await.close().await;
+        fixture.abort();
     }
 
     #[tokio::test]

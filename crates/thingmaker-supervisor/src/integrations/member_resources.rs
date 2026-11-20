@@ -378,15 +378,16 @@ pub fn catalog_with_homes(home: &Path, config_dir: &Path, codex_home: &Path, roo
             entry.problem = Some("Replaced by another definition of the same name".into());
         }
     }
-    #[cfg(windows)]
-    entries.push(ResourceEntry {
-        id: BUILTIN_WEB.into(), name: "ThingMaker Web".into(), kind: "mcp".into(),
-        description: "Allow this agent to search and read the web using ThingMaker.".into(),
-        group: "builtin".into(), available: true, problem: None, source: "ThingMaker".into(),
-        target: None, mcp_dependencies: vec![], dependency_notes: vec![],
-        runtime_name: "thingmaker-web".into(), config: Value::Null, revision: "1".into(),
-        skill_path: None, bridge_skill: false,
-    });
+    if WEB_SUPPORTED {
+        entries.push(ResourceEntry {
+            id: BUILTIN_WEB.into(), name: "ThingMaker Web".into(), kind: "mcp".into(),
+            description: "Allow this agent to search and read the web using ThingMaker.".into(),
+            group: "builtin".into(), available: true, problem: None, source: "ThingMaker".into(),
+            target: None, mcp_dependencies: vec![], dependency_notes: vec![],
+            runtime_name: "thingmaker-web".into(), config: Value::Null, revision: "1".into(),
+            skill_path: None, bridge_skill: false,
+        });
+    }
     entries.sort_by(|a, b| a.id.cmp(&b.id));
     skill_dependencies::annotate(&mut entries);
     Ok(ResourceCatalog { entries, local_only: false, notes: vec![
@@ -396,6 +397,8 @@ pub fn catalog_with_homes(home: &Path, config_dir: &Path, codex_home: &Path, roo
 }
 
 pub const BUILTIN_WEB: &str = "mcp:builtin:thingmaker-web";
+/// The systems whose installer carries the web runtime (its own Node.js and Chromium).
+pub const WEB_SUPPORTED: bool = cfg!(any(windows, target_os = "macos"));
 
 pub struct ResolvedResources {
     pub builtin_web: bool,
@@ -602,7 +605,7 @@ pub fn resolve(catalog: &ResourceCatalog, selection: &ResourceSelection, environ
     }
     for (kind, ids) in [("skill", &selection.skills), ("mcp", &selection.mcps)] {
         for id in ids {
-            if !cfg!(windows) && kind == "mcp" && id == BUILTIN_WEB { continue; }
+            if !WEB_SUPPORTED && kind == "mcp" && id == BUILTIN_WEB { continue; }
             let entry = catalog.entries.iter().find(|entry| entry.id == *id && entry.kind == kind && entry.available)
                 .ok_or_else(|| DesktopError::not_ready(format!("Selected resource {id} is missing or disabled. Edit this member's selection.")))?;
             revisions.insert(id, entry.revision.clone());
@@ -636,7 +639,7 @@ pub fn resolve(catalog: &ResourceCatalog, selection: &ResourceSelection, environ
     skills.sort();
     skills.dedup();
     let revision = content_hash(serde_json::to_vec(&json!([revisions, mcps])).unwrap_or_default().as_slice());
-    let builtin_web = cfg!(windows) && selection.mcps.iter().any(|id| id == BUILTIN_WEB);
+    let builtin_web = WEB_SUPPORTED && selection.mcps.iter().any(|id| id == BUILTIN_WEB);
     if builtin_web && mcps.contains_key("thingmaker-web") {
         return Err(DesktopError::conflict("Choose one definition for thingmaker-web"));
     }
@@ -737,7 +740,7 @@ mod tests {
         assert!(resolve(&found, &missing, &HashMap::new()).is_err());
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn a_web_scout_skill_offers_the_builtin_connection_but_only_selecting_it_enables_web() {
         let home = tempfile::tempdir().unwrap();

@@ -170,14 +170,18 @@ const storeUrl = "https://chromewebstore.google.com/detail/browse/mfnicocicmmlkp
 const exec = promisify(execFile);
 let chromeTab, chromeDetached = false, browseClient;
 async function browseBinary() {
-  const pkg = "@opencode/browse-windows-x64";
-  const source = resolve(root, "node_modules", pkg, "bin/browse.exe");
+  // Browse ships one native companion per system and processor.
+  const windows = process.platform === "win32";
+  const pkg = "@opencode/browse-"+(windows ? "windows" : process.platform)+"-"+process.arch;
+  const name = windows ? "browse.exe" : "browse";
+  const source = resolve(root, "node_modules", pkg, "bin", name);
   const cache = process.env.THINGMAKER_BROWSE_BIN_DIR;
   if (!cache) return source;
   // Multiple chats can use the same relay. Keep its running image outside the
-  // installation directory while Windows stages a desktop update.
-  const directory = resolve(cache, dep(pkg+"/package.json").version);
-  const binary = resolve(directory, "browse.exe");
+  // installation directory while a desktop update replaces it. A universal
+  // Mac holds one copy per processor.
+  const directory = resolve(cache, dep(pkg+"/package.json").version, ...(windows ? [] : [process.arch]));
+  const binary = resolve(directory, name);
   try { await access(binary); return binary; }
   catch (e) { if (e.code !== "ENOENT") throw e; }
   await mkdir(directory, {recursive:true});

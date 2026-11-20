@@ -1,5 +1,5 @@
-// Invoke with the INSTALLED web-runtime/node.exe, passing the installed runtime
-// directory. Optional CDP URL targets an already-running installed desktop.
+// Invoke with the INSTALLED web-runtime/node.exe (node on macOS), passing the
+// installed runtime directory. Optional CDP URL targets an already-running installed desktop.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -17,7 +17,7 @@ const site = createServer((_req, res) => {
 site.listen(0,"127.0.0.1");
 await once(site,"listening");
 const fixture = "http://127.0.0.1:"+site.address().port+"/";
-const env = {...process.env, PATH: process.env.SystemRoot+"\\System32", THINGMAKER_WEB_TEST_LOOPBACK:"1", THINGMAKER_WEB_ENABLED:"1", PLAYWRIGHT_BROWSERS_PATH:join(root,"browsers")};
+const env = {...process.env, PATH: process.platform === "win32" ? process.env.SystemRoot+"\\System32" : "/usr/bin:/bin", THINGMAKER_WEB_TEST_LOOPBACK:"1", THINGMAKER_WEB_ENABLED:"1", PLAYWRIGHT_BROWSERS_PATH:join(root,"browsers")};
 delete env.THINGMAKER_WEB_MCP_DIR;
 delete env.WEB_SCOUT_SEARXNG_URL;
 const child = spawn(process.execPath,[join(root,"session.mjs")],{cwd:root,env,windowsHide:true});

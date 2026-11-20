@@ -74,7 +74,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "requires the packaged Windows Web runtime"]
+    #[ignore = "requires the staged web runtime"]
     async fn the_first_tool_call_starts_the_same_runtime_used_by_the_panel() {
         let temp = tempfile::tempdir().unwrap();
         let state = crate::state::AppState::initialize(temp.path(),None).unwrap();

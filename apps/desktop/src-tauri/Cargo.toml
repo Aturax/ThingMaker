@@ -61,6 +61,8 @@ block2 = "=0.6.2"
 objc2-av-foundation = { version = "=0.3.2", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat", "block2"] }
 security-framework = "=3.7.0"
 core-foundation = "=0.10.1"
+# The Web bridge forwards an agent's tool calls to the web runtime.
+reqwest = { version = "=0.13.4", features = ["json"] }
 
 [target.'cfg(windows)'.dependencies]
 reqwest = { version = "=0.13.4", features = ["json"] }

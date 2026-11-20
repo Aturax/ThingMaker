@@ -15,7 +15,7 @@ export const shell: Record<string, string> = {
   "OpenCode Browse could not generate a pairing code.": "OpenCode Browse no ha podido generar el código de vinculación.",
   "The installed web runtime is missing": "Falta el componente web de la instalación",
   "The web runtime is missing. Reinstall ThingMaker.": "Falta el componente web. Vuelve a instalar ThingMaker.",
-  "ThingMaker Web is available on Windows.": "ThingMaker Web está disponible en Windows.",
+  "ThingMaker Web is available on Windows and macOS.": "ThingMaker Web está disponible en Windows y macOS.",
   "Missing web control pipe": "Falta el canal de control del navegador",
   "Missing web reply pipe": "Falta el canal de respuesta del navegador",
   "web-mcp startup timed out": "El navegador ha tardado demasiado en iniciarse",

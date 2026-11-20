@@ -2,7 +2,7 @@
 
 Models installed in [Ollama](https://ollama.com) on this computer, as a
 fourth provider beside Claude Code, Codex and Gemini. **Free:** nothing is
-billed and no account is used. Chat mode only contacts Ollama. Local agents stay offline by default. On Windows, selecting **ThingMaker Web** in an agent’s resources allows it to search and read public websites.
+billed and no account is used. Chat mode only contacts Ollama. Local agents stay offline by default. On Windows and macOS, selecting **ThingMaker Web** in an agent’s resources allows it to search and read public websites.
 
 ## Two ways to run a model
 

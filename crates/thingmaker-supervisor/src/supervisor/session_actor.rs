@@ -1838,7 +1838,7 @@ impl ActorState {
         Snapshot {
             handle: self.handle.clone(),
             provider: self.launch.provider(),
-            web_available: cfg!(windows) && self.config.builtin_web,
+            web_available: crate::integrations::member_resources::WEB_SUPPORTED && self.config.builtin_web,
             agent_session_id: self.agent_session_id.clone(),
             process: self.process,
             attachment: self.attachment,

@@ -3,8 +3,9 @@ import type { SessionHandle, WebAction, WebFrame } from "@thingmaker/contracts";
 import { api } from "../ipc";
 import { t } from "../i18n";
 
+/** The desktops whose installer carries the web runtime. */
 export function supportsWeb() {
-  return /Windows|Win32|Win64/i.test(navigator.platform + " " + navigator.userAgent);
+  return /Windows|Win32|Win64|Macintosh|MacIntel/i.test(navigator.platform + " " + navigator.userAgent);
 }
 
 export function WebView({ handle, standalone = false }: { handle: SessionHandle; standalone?: boolean }) {
