@@ -116,6 +116,10 @@ impl Provider {
     }
 }
 
+/// Turns Claude Code's Artifact tool on in an SDK session, where it is off
+/// by default.
+pub const CLAUDE_ARTIFACT_ENV: &str = "CLAUDE_CODE_ARTIFACT";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentLaunch {
     Claude(ClaudeLaunchOptions),
@@ -231,7 +235,8 @@ impl AgentLaunch {
 
     /// Variables this provider's program needs set beyond the documented
     /// profile: Codex's `CODEX_HOME` for an account that is not the default,
-    /// and a Local Models session's own (see `agents::local`).
+    /// Claude's account folder and Artifact switch, and a Local Models
+    /// session's own (see `agents::local`).
     pub fn environment(&self) -> Vec<(String, String)> {
         match self {
             Self::Claude(options) => match &options.local {
@@ -243,7 +248,15 @@ impl AgentLaunch {
                     }
                     env
                 },
-                None => options.config_dir.iter().map(|dir| ("CLAUDE_CONFIG_DIR".to_string(), dir.to_string_lossy().into_owned())).collect(),
+                None => {
+                    let mut env: Vec<(String, String)> = options.config_dir.iter().map(|dir| ("CLAUDE_CONFIG_DIR".to_string(), dir.to_string_lossy().into_owned())).collect();
+                    // Claude Code withholds its Artifact tool from SDK
+                    // sessions ("sdk_default_off") unless this is set. The
+                    // person's own settings and their org's policy still
+                    // decide after it.
+                    env.push((CLAUDE_ARTIFACT_ENV.into(), "1".into()));
+                    env
+                },
             },
             Self::Gemini(options) => gemini::launch::account_environment(options.account_home.as_deref()),
             Self::Codex(options) => {
@@ -298,5 +311,17 @@ mod tests {
         assert_eq!(resumed.arguments(), ["adapter.js"]);
         assert_eq!(resumed.provider(), Provider::Claude);
         assert_eq!(resumed.root(), Path::new("/work"));
+    }
+
+    #[test]
+    fn a_claude_session_turns_the_artifact_tool_on() {
+        let mut options = ClaudeLaunchOptions::new("/work", "/usr/bin/node", vec!["adapter.js".into()]);
+        let env: std::collections::HashMap<_, _> = AgentLaunch::Claude(options.clone()).environment().into_iter().collect();
+        assert_eq!(env[CLAUDE_ARTIFACT_ENV], "1", "Claude Code withholds it from SDK sessions otherwise");
+        assert!(!env.contains_key("CLAUDE_CONFIG_DIR"));
+        options.config_dir = Some("/accounts/work".into());
+        let env: std::collections::HashMap<_, _> = AgentLaunch::Claude(options).environment().into_iter().collect();
+        assert_eq!(env[CLAUDE_ARTIFACT_ENV], "1");
+        assert_eq!(env["CLAUDE_CONFIG_DIR"], "/accounts/work");
     }
 }
